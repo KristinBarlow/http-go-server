@@ -3,16 +3,23 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MyGoProjects/http-go-server/src/models"
 	"github.com/google/uuid"
 	db "github.com/inContact/orch-common/dbmappings"
+	"github.com/inContact/orch-digital-middleware/pkg/digiservice"
+	"github.com/inContact/orch-digital-middleware/pkg/digitransport"
+	"google.golang.org/grpc"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type TenantIdsObj struct {
@@ -24,21 +31,25 @@ type DmwKnownContacts struct {
 }
 
 type DmwKnownContact struct {
-	ContactID           int64  `json:"ContactID"`
-	MasterContactID     int64  `json:"MasterContactID"`
-	TenantID            string `json:"TenantID"`
-	StartDate           string `json:"StartDate"`
-	FromAddr            string `json:"FromAddr"`
-	CurrentContactState int32  `json:"CurrentContactState"`
-	CurrentContactDate  string `json:"CurrentContactDate"`
-	Direction           int32  `json:"Direction"`
-	ChannelID           string `json:"ChannelID"`
-	StateIndex          int32  `json:"StateIndex"`
-	CaseIDString        string `json:"CaseIDString"`
-	DigitalContactState int32  `json:"DigitalContactState"`
-	EventID             string `json:"EventID"`
-	NewState            int32
-	UpdateDateStr       string
+	ContactID                   int64  `json:"ContactID"`
+	MasterContactID             int64  `json:"MasterContactID"`
+	TenantID                    string `json:"TenantID"`
+	QueueID                     string `json:"QueueID,omitempty"`
+	StartDate                   string `json:"StartDate"`
+	FromAddr                    string `json:"FromAddr"`
+	CurrentContactState         int32  `json:"CurrentContactState"`
+	CurrentContactDate          string `json:"CurrentContactDate"`
+	Direction                   int32  `json:"Direction"`
+	ChannelID                   string `json:"ChannelID"`
+	StateIndex                  int32  `json:"StateIndex"`
+	CaseIDString                string `json:"CaseIDString"`
+	DigitalContactState         int32  `json:"DigitalContactState"`
+	PreviousQueueID             string `json:"PreviousQueueID,omitempty"`
+	PreviousAgentUserID         string `json:"PreviousAgentUserID,omitempty"`
+	PreviousContactState        int32  `json:"PreviousContactState,omitempty"`
+	PreviousContactDate         string `json:"PreviousContactDate,omitempty"`
+	PreviousDigitalContactState int32  `json:"PreviousDigitalContactState,omitempty"`
+	EventID                     string `json:"EventID"`
 }
 
 type DfoAuthTokenBody struct {
@@ -54,32 +65,6 @@ type DfoAuthTokenObj struct {
 	Scope       string `json:"scope,omitempty"`
 }
 
-type DfoActiveContacts struct {
-	Data []DfoActiveContact `json:"data"`
-}
-
-type DfoActiveContact struct {
-	Id                string            `json:"id"`
-	Status            string            `json:"status"`
-	StatusUpdatedAt   string            `json:"statusUpdatedAt"`
-	RoutingQueueId    string            `json:"routingQueueId"`
-	OwnerAssigneeUser OwnerAssigneeUser `json:"ownerAssigneeUser,omitempty"`
-}
-
-type OwnerAssigneeUser struct {
-	Id             int32  `json:"id"`
-	IncontactId    string `json:"incontactId,omitempty"`
-	EmailAddress   string `json:"emailaddress,omitempty"`
-	LoginUsername  string `json:"loginUsername,omitempty"`
-	FirstName      string `json:"firstName,omitempty"`
-	Surname        string `json:"surname,omitempty"`
-	Nickname       string `json:"nickname,omitempty"`
-	ImageUrl       string `json:"imageUrl,omitempty"`
-	PublicImageUrl string `json:"publicImageUrl,omitempty"`
-	IsBotUser      bool   `json:"isBotUser,omitempty"`
-	IsSurveyUser   bool   `json:"isSurveyUser,omitempty"`
-}
-
 const (
 	tenantGuidRequest   string = "tenantID (in GUID format)"
 	clientIdRequest     string = "clientId"
@@ -90,6 +75,7 @@ const CONTACTENDED = "ContactEnded"
 const CONTACTSTATEUPDATED = "ContactStateUpdated"
 
 func main() {
+	ctx := context.Background()
 	// TODO: Call get tenants to get list of tenants that DMW is aware of
 	// TODO: Loop through each tenant to get the active contacts, compare, and then update DMW contact states (how can we authenticate if we do this?)
 	// TODO: If can't do above todo's, figure out how to input multiple tenants in command line
@@ -110,31 +96,77 @@ func main() {
 	}
 
 	// Get list of Digimiddleware known active contacts
-	dmwContactStateApiUrl := "http://digi-shared-eks01-na1.omnichannel.dev.internal:8085/digimiddleware/getstatesbytenants"
+	dmwContactStateApiUrl := "http://digi-shared-eks01-na1.omnichannel.staging.internal:8085/digimiddleware/getstatesbytenants"
 	dmwResponse := GetDmwActiveContactStateData(dmwContactStateApiUrl, tenants)
 
 	var dmwKnownContacts DmwKnownContacts
 	if dmwResponse != nil {
 		err := json.Unmarshal(dmwResponse, &dmwKnownContacts)
 		if err != nil {
-			fmt.Println("Cannot unmarshal dmwResponse")
+			fmt.Printf("Cannot unmarshal dmwResponse.  Error: %v", err)
 		}
 	}
+
+	sort.SliceStable(dmwKnownContacts.Contacts, func(i, j int) bool {
+		return dmwKnownContacts.Contacts[i].ContactID < dmwKnownContacts.Contacts[j].ContactID
+	})
+
+	// Get DFO auth token
+	dfoAuthTokenApiUrl := "https://api-de-na1.staging.niceincontact.com/engager/2.0/token"
+	dfoAuthTokenObj := GetDfoAuthToken(dfoAuthTokenApiUrl)
 
 	// Get list of DFO active contacts
-	dfoActiveContactsApiUrl := "https://api-de-na1.dev.niceincontact.com/dfo/3.0/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
-	dfoResponse := GetDfoActiveContactList(dfoActiveContactsApiUrl)
+	dfoContactSearchApiUrl := "https://api-de-na1.staging.niceincontact.com/dfo/3.0/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+	var err error
+	var hits int32 = 25
+	var dfoActiveContactList models.DfoContactSearchResponse
+	var dfoData []models.DataView
 
-	var dfoActiveContacts DfoActiveContacts
-	if dfoResponse != nil {
-		err := json.Unmarshal(dfoResponse, &dfoActiveContacts)
+	// Call DFO 3.0 GET Contact Search which returns 1st 25 records
+	dfoResponse := GetDfoActiveContactList(dfoContactSearchApiUrl, dfoAuthTokenObj)
+	if dfoResponse != nil || len(dfoResponse) > 0 {
+		err = json.Unmarshal(dfoResponse, &dfoActiveContactList)
 		if err != nil {
-			fmt.Println("Cannot unmarshal dfoResponse")
+			fmt.Printf("Cannot unmarshal dfoResponse to full object.  Error: %v", err)
+			return
+		}
+	} else {
+		fmt.Println("GetDfoActiveContactList returned 0 records")
+	}
+
+	// Append first 25 Data records to Data list
+	dfoData = append(dfoData, dfoActiveContactList.Data...)
+
+	if dfoActiveContactList.Hits > 25 {
+		// Sleep for 1 sec between calls to not overload the GET Contact Search api
+		time.Sleep(1000 * time.Millisecond)
+		for hits <= dfoActiveContactList.Hits {
+			dfoContactSearchApiUrlSt := dfoContactSearchApiUrl + "&scrollToken=" + dfoActiveContactList.ScrollToken
+			hits += 25
+
+			// Call DFO 3.0 GET Contact Search to get next 25 records
+			dfoResponse = GetDfoActiveContactList(dfoContactSearchApiUrlSt, dfoAuthTokenObj)
+			fmt.Printf("dfoResponse [%v]: ", hits)
+
+			if dfoResponse != nil {
+				err := json.Unmarshal(dfoResponse, &dfoActiveContactList)
+				if err != nil {
+					fmt.Printf("Cannot unmarshal dfoResponse to full object.  Error: %v", err)
+					return
+				}
+			}
+
+			// Append next 25 Data records to Data list
+			dfoData = append(dfoData, dfoActiveContactList.Data...)
 		}
 	}
 
+	sort.SliceStable(dfoData, func(i, j int) bool {
+		return dfoData[i].Id < dfoData[j].Id
+	})
+
 	// Compare lists to get the contacts that exist in DMW but are closed in DFO.
-	deltaList := GetDeltaList(dmwKnownContacts, dfoActiveContacts)
+	deltaList := GetDeltaList(dmwKnownContacts, dfoData)
 	var deltaContacts DmwKnownContacts
 	if deltaList != nil {
 		err := json.Unmarshal(deltaList, &deltaContacts)
@@ -158,6 +190,17 @@ func main() {
 	//	contact = digiEventUpdateContact(contact.EventID, contact.newState, event.GetCreatedAt(), nil, nil, eventType, action, existingContact)
 	//
 	//}
+
+	// Create gRPC client to pass CaseEventUpdate to digimiddlware
+	middlewareEventService := createGrpcClient(ctx)
+
+	if middlewareEventService == nil {
+		return
+	}
+
+	//TODO: build caseUpdateEvent to pass in place of nil below
+	middlewareEventService.CaseEventUpdate(ctx, nil)
+	// TODO: pass middlewareEventService to what will be making the Grpc service call
 }
 
 // GetTenantCredentials requests user inputs the tenant's clientId into the console for authentication
@@ -215,12 +258,8 @@ func GetDmwActiveContactStateData(apiUrl string, tenants [1]string) []byte {
 }
 
 // GetDfoActiveContactList calls DFO 3.0 api GET Contact Search which returns a list of active contacts for tenant auth token provided
-func GetDfoActiveContactList(apiUrl string) []byte {
+func GetDfoActiveContactList(apiUrl string, dfoAuthTokenObj DfoAuthTokenObj) []byte {
 	var responseData []byte
-
-	// Get DFO auth token
-	dfoAuthTokenApiUrl := "https://api-de-na1.dev.niceincontact.com/engager/2.0/token"
-	dfoAuthTokenObj := GetDfoAuthToken(dfoAuthTokenApiUrl)
 
 	// Create a Bearer string by appending string access token
 	var bearer = dfoAuthTokenObj.TokenType + " " + dfoAuthTokenObj.AccessToken
@@ -244,6 +283,7 @@ func GetDfoActiveContactList(apiUrl string) []byte {
 	if err != nil {
 		log.Println("Error while reading the response bytes:", err)
 	}
+
 	return responseData
 }
 
@@ -303,7 +343,7 @@ func GetDfoAuthToken(apiUrl string) DfoAuthTokenObj {
 	if responseData != nil {
 		err := json.Unmarshal(responseData, &dfoAuthTokenObj)
 		if err != nil {
-			fmt.Println("Cannot unmarshal dfoAuthToken")
+			fmt.Printf("Cannot unmarshal dfoAuthToken. Error: %v", err)
 		}
 	} else {
 		fmt.Println("DfoAuthToken was null or empty.")
@@ -312,56 +352,75 @@ func GetDfoAuthToken(apiUrl string) DfoAuthTokenObj {
 }
 
 // GetDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
-func GetDeltaList(dmwKnownContacts DmwKnownContacts, dfoActiveContacts DfoActiveContacts) []byte {
-	found := false
-	var newState int32
-	var updateDateStr string
+func GetDeltaList(dmwKnownContacts DmwKnownContacts, dfoData []models.DataView) []byte {
 	type DmwContacts []DmwKnownContact
 	deltaArray := DmwContacts{}
 	var deltaList DmwKnownContacts
 
 	// Loop through DmwKnownContacts and check each contact data in DfoActiveContacts to see if we find a match
 	for _, contact := range dmwKnownContacts.Contacts {
-		for _, data := range dfoActiveContacts.Data {
-			dataId, _ := strconv.ParseInt(data.Id, 10, 64)
-			if contact.ContactID == dataId {
-				found = true
-				// If contact found and states do not match, then we need to update state.
-				var agentUserID OwnerAssigneeUser
-				realContactState := determineContactStateFromData(agentUserID.IncontactId, data.RoutingQueueId, data.Status)
-				if contact.CurrentContactState != int32(realContactState) {
-					newState = int32(realContactState)
-					updateDateStr = data.StatusUpdatedAt
+		found := false
+		requiresUpdate := false
+		var realContactState db.InDataContactState
+		var data models.DataView
+		// Only compare contact with DFO data if contact is not closed (18)
+		if contact.CurrentContactState != 18 {
+			// Compare the data from DFO with the DMW data
+			for _, data = range dfoData {
+				dataId, _ := strconv.ParseInt(data.Id, 10, 64)
+				// Check if there is a match for an active contact in DfoData
+				if contact.ContactID == dataId {
+					found = true
+					// Determine what the correct current contact state should be based on the dfoData.
+					realContactState = determineContactStateFromData(data.InboxAssigneeUser.IncontactId, data.RoutingQueueId, data.Status)
+					// If contact requiresUpdate and states match, no need to update state.
+					if contact.CurrentContactState == int32(realContactState) {
+						break
+					} else {
+						requiresUpdate = true
+					}
 				}
-				break
+			}
+
+			// If no match in dfoData, then we need to update contact to closed
+			if !found {
+				requiresUpdate = true
 			}
 		}
 
-		// If no match is found or state needs to be updated, add contact data to deltaList
-		if !found {
-			fmt.Printf("Adding ContactID: [%v] to deltaList\n", contact.ContactID)
+		// If no match is requiresUpdate or state needs to be updated, add contact data to deltaList
+		if requiresUpdate {
+			//fmt.Printf("ContactID*[%v]*CurrentContactState*[%v]*RealContactState*[%v]*CurrentContactDate*[%v]*Found*[%v]*RequiresUpdate*[%v]\n", contact.ContactID, contact.CurrentContactState, realContactState, contact.CurrentContactDate, found, requiresUpdate)
 
-			if newState == 0 {
+			contact.CurrentContactDate = time.Now().String() //TODO: do we have to find the real time it was closed?
+			contact.EventID = uuid.NewString()
+
+			if found {
+				contact.CurrentContactState = int32(realContactState)
+			} else {
 				contact.CurrentContactState = int32(db.InDataContactState_EndContact)
-				//contact.CurrentContactDate = time.Now() //TODO: do we have to find the real time it was closed?
 			}
 
 			delta := DmwKnownContact{
-				ContactID:           contact.ContactID,
-				MasterContactID:     contact.MasterContactID,
-				TenantID:            contact.TenantID,
-				StartDate:           contact.StartDate,
-				FromAddr:            contact.FromAddr,
-				CurrentContactState: contact.CurrentContactState,
-				CurrentContactDate:  contact.CurrentContactDate,
-				Direction:           contact.Direction,
-				ChannelID:           contact.ChannelID,
-				StateIndex:          contact.StateIndex,
-				CaseIDString:        contact.CaseIDString,
-				DigitalContactState: contact.DigitalContactState,
-				EventID:             contact.EventID,
-				NewState:            newState,
-				UpdateDateStr:       updateDateStr,
+				ContactID:                   contact.ContactID,
+				MasterContactID:             contact.MasterContactID,
+				TenantID:                    contact.TenantID,
+				QueueID:                     contact.QueueID,
+				StartDate:                   contact.StartDate,
+				FromAddr:                    contact.FromAddr,
+				CurrentContactState:         contact.CurrentContactState,
+				CurrentContactDate:          contact.CurrentContactDate,
+				Direction:                   contact.Direction,
+				ChannelID:                   contact.ChannelID,
+				StateIndex:                  contact.StateIndex,
+				CaseIDString:                contact.CaseIDString,
+				DigitalContactState:         contact.DigitalContactState,
+				PreviousQueueID:             contact.PreviousQueueID, // TODO: do I need to figure out the true previous data for these?
+				PreviousAgentUserID:         contact.PreviousAgentUserID,
+				PreviousContactState:        contact.PreviousContactState,
+				PreviousContactDate:         contact.PreviousContactDate,
+				PreviousDigitalContactState: contact.PreviousDigitalContactState,
+				EventID:                     contact.EventID,
 			}
 
 			deltaArray = append(deltaArray, delta)
@@ -369,6 +428,8 @@ func GetDeltaList(dmwKnownContacts DmwKnownContacts, dfoActiveContacts DfoActive
 			deltaList = DmwKnownContacts{
 				Contacts: deltaArray,
 			}
+			fmt.Printf("ContactID*[%v]*CurrentContactState*[%v]*RealContactState*[%v]*CurrentContactDate*[%v]*Found*[%v]*RequiresUpdate*[%v]\n", delta.ContactID, delta.CurrentContactState, realContactState, delta.CurrentContactDate, found, requiresUpdate)
+
 		}
 	}
 
@@ -401,6 +462,20 @@ func determineContactStateFromData(agentUserID, queueID, digitalContactState str
 		contactState = db.InDataContactState_Undefined
 	}
 	return contactState
+}
+
+func createGrpcClient(ctx context.Context) digiservice.GrpcService {
+	digimiddlewareGrpcAddr := "digi-shared-eks01-na1.omnichannel.dev.internal:9884"
+	conn, err := grpc.Dial(digimiddlewareGrpcAddr, grpc.WithInsecure())
+	if err != nil {
+		fmt.Printf("initialization of digimiddleware gRPC client failed with err: %w", err)
+		return nil
+	} else {
+		fmt.Println("gRPC client initialized")
+	}
+
+	middlewareEventService := digitransport.NewGRPCClient(conn, nil, nil)
+	return middlewareEventService
 }
 
 //var tenantArr [...]string

@@ -1,0 +1,10 @@
+env:
+  -dev
+  -test
+  -staging
+  -aa
+  -af
+  -aj
+  -al
+  -am
+  -ao
