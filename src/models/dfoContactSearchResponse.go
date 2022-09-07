@@ -9,10 +9,12 @@ type DfoContactSearchResponse struct {
 type DataView struct {
 	Id                          string                        `json:"id"`
 	ThreadId                    string                        `json:"threadId"`
+	ThreadIdOnExternalPlatform  string                        `json:"threadIdOnExternalPlatform,omitempty"`
 	ChannelId                   string                        `json:"channelId"`
-	InteractionId               string                        `json:"interactionId"`
-	ContactGuid                 string                        `json:"contactId"`
-	CustomerContactId           string                        `json:"customerContactId"`
+	InteractionId               string                        `json:"interactionId,omitempty"`
+	ConsumerContactStorageId    string                        `json:"consumerContactStorageId,omitempty"`
+	ContactGuid                 string                        `json:"contactId,omitempty"`
+	CustomerContactId           string                        `json:"customerContactId,omitempty"`
 	Status                      string                        `json:"status"`
 	StatusUpdatedAt             string                        `json:"statusUpdatedAt"`
 	RoutingQueueId              string                        `json:"routingQueueId"`
