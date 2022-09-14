@@ -33,6 +33,7 @@ type TenantIdsObj struct {
 
 type DmwKnownContacts struct {
 	Contacts []DmwKnownContact `json:"contacts"`
+	Error    error
 }
 
 type DmwKnownContact struct {
@@ -68,53 +69,68 @@ type DfoAuthTokenObj struct {
 	ExpiresIn   int32  `json:"expires_in"`
 	TokenType   string `json:"token_type"`
 	Scope       string `json:"scope,omitempty"`
+	Error       error
 }
 
 const (
-	dmwGetStatesEndpoint            = "/getstatesbytenants"
-	dfoAuthTokenEndpoint            = "/token"
-	dfoContactSearchEndpoint        = "/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
-	dfoContactByIdEndpoint          = "/contacts/"
-	DMWAPIURLPREFIX          string = "http://digi-shared-eks01-"
-	DFOAPIURLPREFIX          string = "https://api-de-"
-	DMWGRPCURIPREFIX         string = "digi-shared-eks01-"
-	regionRequest            string = "region - \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
-	envRequest               string = "environment - \"dev\", \"test\", \"staging\", \"prod\""
-	tenantGuidRequest        string = "tenantID (in GUID format)"
-	busNoRequest             string = "business unit number"
-	clientIdRequest          string = "clientId"
-	clientSecretRequest      string = "clientSecret"
-	batchSize                int    = 100
+	dfoApiUrlPrefix          = "https://api-de-"
+	dfoApiV2Path             = ".niceincontact.com/engager/2.0"
+	dfoApiV3Path             = ".niceincontact.com/dfo/3.0"
+	dfoAuthTokenEndpoint     = "/token"
+	dfoContactSearchEndpoint = "/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+	dfoContactByIdEndpoint   = "/contacts/"
+	dmwApiUrlPrefix          = "http://digi-shared-eks01-"
+	dmwApiPath               = "/digimiddleware"
+	dmwApiPort               = "8085"
+	dmwGetStatesEndpoint     = "/getstatesbytenants"
+	dmwGrpcUriPrefix         = "digi-shared-eks01-"
+	dmwGrpcPort              = "9884"
+	regionRequest            = "region - \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
+	envRequest               = "environment - \"dev\", \"test\", \"staging\", \"prod\""
+	tenantGuidRequest        = "tenantID (in GUID format)"
+	busNoRequest             = "business unit number"
+	clientIdRequest          = "clientId"
+	clientSecretRequest      = "clientSecret"
+	batchSize                = 100
 )
 
 func main() {
+	var dfoData []models.DataView
+	var dmwKnownContacts DmwKnownContacts
 	st := time.Now()
 	region, env, tenantId, busNo, clientId, clientSecret := "", "", "", "", "", ""
 	var tenants [1]string
 	var wg sync.WaitGroup
 
 	//Prompt for needed input data
-	region = PromptForInputData("region", regionRequest)
-	env = PromptForInputData("env", envRequest)
-	tenantId = PromptForInputData("tenantId", tenantGuidRequest)
-	busNo = PromptForInputData("busNo", busNoRequest)
-	clientId = PromptForInputData("clientCreds", clientIdRequest)
-	clientSecret = PromptForInputData("clientCreds", clientSecretRequest)
+	//region = PromptForInputData("region", regionRequest)
+	//env = PromptForInputData("env", envRequest)
+	//tenantId = PromptForInputData("tenantId", tenantGuidRequest)
+	//busNo = PromptForInputData("busNo", busNoRequest)
+	//clientId = PromptForInputData("clientCreds", clientIdRequest)
+	//clientSecret = PromptForInputData("clientCreds", clientSecretRequest)
 
 	// This section used for debugging.  Comment out prompts above and uncomment below to fill in data.
+	region = "na1"
+	env = "dev"
+	tenantId = "11EA8B00-FE26-D4C0-8B66-0242AC110005"
+	busNo = "4534531"
+	clientId = "hZtufP76V4QKcWogRiaFHVQx1XGspDPFamH78P8n1xQqt"
+	clientSecret = "SdrPoz7hj0GoEvxwDZweiK21jRBRUNFEfIhlrEKaSBK2t"
+
 	//region = "na1"
 	//env = "dev"
-	//tenantId = "11EB505F-7844-7680-923B-0242AC110003"
-	//busNo = "15572"
-	//clientId = "cNqAL5N8CyGT5oMTTczpdSeDQnxTN2hyeg4m4QAqjY2s5"
-	//clientSecret = "2ZLdiztGgAcPlHunzTX355M8Hx9fqHunNvXctE0iWYBru"
+	//tenantId = "11eb5204-ec4d-a370-a1ba-0242ac110002"
+	//busNo = "15573"
+	//clientId = "i7ZnwBxZ5d5iSgb9EumUYx6I07ZsShyt2lQGKyVLPbMAF"
+	//clientSecret = "00eUgcwMlv3IXd2MacYXsgtyXg4PXx8VdGo3NeRbMrlm3"
 
 	// Build api call URIs
-	dmwContactStateApiUrl := BuildUri("dmwGetStates", DMWAPIURLPREFIX, region, env)
-	dfoAuthTokenApiUrl := BuildUri("dfoAuthToken", DFOAPIURLPREFIX, region, env)
-	dfoContactSearchApiUrl := BuildUri("dfoContactSearch", DFOAPIURLPREFIX, region, env)
-	dfoContactByIdApiUrl := BuildUri("dfoContactById", DFOAPIURLPREFIX, region, env)
-	dmwGrpcApiUrl := BuildUri("dmwGrpc", DMWGRPCURIPREFIX, region, env)
+	dmwContactStateApiUrl := BuildUri("dmwGetStates", region, env)
+	dfoAuthTokenApiUrl := BuildUri("dfoAuthToken", region, env)
+	dfoContactSearchApiUrl := BuildUri("dfoContactSearch", region, env)
+	dfoContactByIdApiUrl := BuildUri("dfoContactById", region, env)
+	dmwGrpcApiUrl := BuildUri("dmwGrpc", region, env)
 
 	// Get DFO auth token
 	var dfoAuthTokenObj DfoAuthTokenObj
@@ -129,6 +145,7 @@ func main() {
 		fmt.Println("begin api call: GetDfoAuthToken")
 		dfoAuthTokenObj, err = GetDfoAuthToken(ctx, dfoAuthTokenApiUrl, clientId, clientSecret)
 		if err != nil {
+			dfoAuthTokenObj.Error = err
 			fmt.Printf("error calling GetDfoAuthToken: [%v]\n", err)
 			return
 		}
@@ -138,58 +155,65 @@ func main() {
 	wg.Wait()
 
 	// Get list of Digimiddleware known active contacts
-	var dmwKnownContacts DmwKnownContacts
+	if dfoAuthTokenObj.Error == nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var cancel context.CancelFunc
+			ctx := context.Background()
+			var err error
+			t := time.Now()
+			tenants[0] = tenantId
+			ctx, cancel = context.WithTimeout(context.Background(), 1000*time.Millisecond)
+			fmt.Println("begin api call: GetDmwActiveContactStateData")
+			dmwKnownContacts, err = GetDmwActiveContactStateData(ctx, dmwContactStateApiUrl, tenants)
+			if err != nil {
+				dmwKnownContacts.Error = err
+				fmt.Printf("error calling GetDmwActiveContactStateData: [%v]\n", err)
+				return
+			}
+			cancel()
+			fmt.Printf("%s - done, duration=%s, contacts=%d\n", "GetDmwActiveContactStateData", time.Since(t), len(dmwKnownContacts.Contacts))
+		}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var cancel context.CancelFunc
-		ctx := context.Background()
+		// Call DFO 3.0 GET Contact Search API to get list of DFO active contacts
 		var err error
-		t := time.Now()
-		tenants[0] = tenantId
-		ctx, cancel = context.WithTimeout(context.Background(), 1000*time.Millisecond)
-		fmt.Println("begin api call: GetDmwActiveContactStateData")
-		dmwKnownContacts, err = GetDmwActiveContactStateData(ctx, dmwContactStateApiUrl, tenants)
-		if err != nil {
-			fmt.Printf("error calling GetDmwActiveContactStateData: [%v]\n", err)
-			return
-		}
-		cancel()
-		fmt.Printf("%s - done, duration=%s, contacts=%d\n", "GetDmwActiveContactStateData", time.Since(t), len(dmwKnownContacts.Contacts))
-	}()
-
-	// Call DFO 3.0 GET Contact Search API to get list of DFO active contacts
-	var dfoData []models.DataView
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var cancel context.CancelFunc
-		ctx := context.Background()
-		var err error
-		t := time.Now()
-		ctx, cancel = context.WithTimeout(context.Background(), 1000*time.Millisecond)
-		fmt.Println("begin api call: MakeDfoContactSearchApiCall")
-		dfoData, err = MakeDfoContactSearchApiCall(ctx, dfoContactSearchApiUrl, dfoAuthTokenObj)
-		if err != nil {
-			fmt.Printf("error calling MakeDfoContactSearchApiCall: [%v]\n", err)
-			return
-		}
-		cancel()
-		fmt.Printf("%s - done, duration=%s, dfoActiveContacts=%d\n", "MakeDfoContactSearchApiCall", time.Since(t), len(dfoData))
-	}()
-	wg.Wait()
+		wg.Add(1)
+		go func(err error) {
+			defer wg.Done()
+			var cancel context.CancelFunc
+			ctx := context.Background()
+			t := time.Now()
+			ctx, cancel = context.WithTimeout(context.Background(), 1000*time.Millisecond)
+			fmt.Println("begin api call: MakeDfoContactSearchApiCall")
+			dfoData, err = MakeDfoContactSearchApiCall(ctx, dfoContactSearchApiUrl, dfoAuthTokenObj)
+			if err != nil {
+				dfoData[0].Error = err
+				fmt.Printf("error calling MakeDfoContactSearchApiCall: [%v]\n", err)
+				return
+			}
+			cancel()
+			fmt.Printf("%s - done, duration=%s, dfoActiveContacts=%d\n", "MakeDfoContactSearchApiCall", time.Since(t), len(dfoData))
+		}(err)
+		wg.Wait()
+	}
 
 	// Compare lists to get the contacts that exist in DMW but are closed in DFO.
 	var deltaContacts DmwKnownContacts
 
-	if dmwKnownContacts.Contacts != nil {
-		fmt.Println("begin building list: buildDeltaList")
-		t := time.Now()
-		deltaContacts = buildDeltaList(dmwKnownContacts, dfoData)
-		fmt.Printf("%s - done, duration=%s, deltaContacts=%d\n", "buildDeltaList", time.Since(t), len(deltaContacts.Contacts))
+	if dmwKnownContacts.Error == nil && dfoData[0].Error == nil {
+		if len(dmwKnownContacts.Contacts) > 0 {
+			fmt.Println("begin building list: buildDeltaList")
+			t := time.Now()
+			deltaContacts = buildDeltaList(dmwKnownContacts, dfoData)
+			fmt.Printf("%s - done, duration=%s, deltaContacts=%d\n", "buildDeltaList", time.Since(t), len(deltaContacts.Contacts))
+		} else {
+			fmt.Println("dmw list was empty due to no contacts or error retrieving data from api - no need to process updates")
+			return
+		}
 	} else {
-		fmt.Println("there were no contacts in dmw list - no need to process updates")
+		fmt.Println("error retrieving data from api - no need to process updates")
+		return
 	}
 
 	// Batch and Process records to digimiddleware using gRPC
@@ -197,6 +221,7 @@ func main() {
 		process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, tenantId, busNo)
 	} else {
 		fmt.Println("comparison of lists returned 0 contacts to update - no need to process updates")
+		return
 	}
 
 	fmt.Printf("update case state service completed - totalDuration = %s\n", time.Since(st))
@@ -299,20 +324,20 @@ func processBatch(list []DmwKnownContact, dfoContactByIdApiUrl string, dfoAuthTo
 	return sanitizedUpdateRecords
 }
 
-func BuildUri(apiType string, apiPrefix string, region string, env string) string {
+func BuildUri(apiType string, region string, env string) string {
 	fmt.Printf("%s uri for requested region [%s] and env [%s] -- ", apiType, region, env)
 	uri := ""
 	switch apiType {
 	case "dmwGetStates":
-		uri = apiPrefix + region + ".omnichannel." + env + ".internal:8085/digimiddleware/getstatesbytenants"
+		uri = dmwApiUrlPrefix + region + ".omnichannel." + env + ".internal:" + dmwApiPort + dmwApiPath + dmwGetStatesEndpoint
 		fmt.Println(uri)
 	case "dfoAuthToken":
 		switch env {
 		case "prod":
-			uri = apiPrefix + region + ".niceincontact.com/engager/2.0/token"
+			uri = dfoApiUrlPrefix + region + dfoApiV2Path + dfoAuthTokenEndpoint
 			fmt.Println(uri)
 		case "dev", "test", "staging":
-			uri = apiPrefix + region + "." + env + ".niceincontact.com/engager/2.0/token"
+			uri = dfoApiUrlPrefix + region + "." + env + dfoApiV2Path + dfoAuthTokenEndpoint
 			fmt.Println(uri)
 		default:
 			break
@@ -320,10 +345,10 @@ func BuildUri(apiType string, apiPrefix string, region string, env string) strin
 	case "dfoContactSearch":
 		switch env {
 		case "prod":
-			uri = apiPrefix + region + ".niceincontact.com/dfo/3.0/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+			uri = dfoApiUrlPrefix + region + dfoApiV3Path + dfoContactSearchEndpoint
 			fmt.Println(uri)
 		case "dev", "test", "staging":
-			uri = apiPrefix + region + "." + env + ".niceincontact.com/dfo/3.0/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+			uri = dfoApiUrlPrefix + region + "." + env + dfoApiV3Path + dfoContactSearchEndpoint
 			fmt.Println(uri)
 		default:
 			break
@@ -331,16 +356,16 @@ func BuildUri(apiType string, apiPrefix string, region string, env string) strin
 	case "dfoContactById":
 		switch env {
 		case "prod":
-			uri = apiPrefix + region + ".niceincontact.com/dfo/3.0/contacts/"
+			uri = dfoApiUrlPrefix + region + dfoApiV3Path + dfoContactByIdEndpoint
 			fmt.Println(uri)
 		case "dev", "test", "staging":
-			uri = apiPrefix + region + "." + env + ".niceincontact.com/dfo/3.0/contacts/"
+			uri = dfoApiUrlPrefix + region + "." + env + dfoApiV3Path + dfoContactByIdEndpoint
 			fmt.Println(uri)
 		default:
 			break
 		}
 	case "dmwGrpc":
-		uri = apiPrefix + region + ".omnichannel." + env + ".internal:9884"
+		uri = dmwGrpcUriPrefix + region + ".omnichannel." + env + ".internal:" + dmwGrpcPort
 		fmt.Println(uri)
 	default:
 		break
@@ -512,7 +537,7 @@ func GetDfoAuthToken(ctx context.Context, apiUrl string, clientId string, client
 func MakeDfoContactSearchApiCall(ctx context.Context, dfoContactSearchApiUrl string, dfoAuthTokenObj DfoAuthTokenObj) ([]models.DataView, error) {
 	var dfoActiveContactList models.DfoContactSearchResponse
 	var dfoData []models.DataView
-	var err error
+	//var err error
 	var hits int32 = 25
 	var mtx sync.Mutex
 
@@ -522,7 +547,7 @@ func MakeDfoContactSearchApiCall(ctx context.Context, dfoContactSearchApiUrl str
 		return dfoData, err
 	}
 	if dfoResponse != nil || len(dfoResponse) > 0 {
-		err := json.Unmarshal(dfoResponse, &dfoActiveContactList)
+		err = json.Unmarshal(dfoResponse, &dfoActiveContactList)
 		if err != nil {
 			fmt.Printf("cannot unmarshal dfo response to full object: [%v]\n", err)
 			return dfoData, err
@@ -543,18 +568,24 @@ func MakeDfoContactSearchApiCall(ctx context.Context, dfoContactSearchApiUrl str
 		// Sleep for 1 sec between calls to not overload the GET Contact Search api
 		time.Sleep(100 * time.Millisecond)
 		for hits <= dfoActiveContactList.Hits {
-			dfoContactSearchApiUrlSt := dfoContactSearchApiUrl + "&scrollToken=" + dfoActiveContactList.ScrollToken
+			// Not sure why but sometimes dfo requires the brackets after scrollToken and sometimes it does not - we should attempt both ways
+			dfoContactSearchApiUrlSt1 := dfoContactSearchApiUrl + "&scrollToken=" + dfoActiveContactList.ScrollToken
+			dfoContactSearchApiUrlSt2 := dfoContactSearchApiUrl + "&scrollToken[]=" + dfoActiveContactList.ScrollToken
 			hits += 25
 
 			// Call DFO 3.0 GET Contact Search to get next 25 records
 			fmt.Printf("calling GetDmwActiveContactStateData to get next set of records up to [%v]\n", hits)
-			dfoResponse, err = MakeDfoApiCall(ctx, dfoContactSearchApiUrlSt, dfoAuthTokenObj, "")
+			dfoResponse, err = MakeDfoApiCall(ctx, dfoContactSearchApiUrlSt1, dfoAuthTokenObj, "")
 			if err != nil {
-				return dfoData, err
+				// Try calling api scrollToken with brackets
+				dfoResponse, err = MakeDfoApiCall(ctx, dfoContactSearchApiUrlSt2, dfoAuthTokenObj, "")
+				if err != nil {
+					return dfoData, err
+				}
 			}
 
 			if dfoResponse != nil {
-				err := json.Unmarshal(dfoResponse, &dfoActiveContactList)
+				err = json.Unmarshal(dfoResponse, &dfoActiveContactList)
 				if err != nil {
 					fmt.Printf("Cannot unmarshal dfo response to full object.  Error: [%v]\n", err)
 					return dfoData, err
@@ -711,19 +742,6 @@ func MakeDfoApiCall(ctx context.Context, apiUrl string, dfoAuthTokenObj DfoAuthT
 
 	return responseData, err
 }
-
-//func removeFromDeltaList(i int32, contact DmwKnownContact, deltaListContacts []DmwKnownContact) []DmwKnownContact {
-//	fmt.Printf("removing contact from deltaList: [%d] - ", contact.ContactID)
-//	a := deltaListContacts
-//	var x DmwKnownContact
-//
-//	copy(a[i:], a[i+1:]) // Shift a[i+1:] left one index.
-//	a[len(a)-1] = x      // Erase last element (write zero value - x is empty dataType).
-//	//a = a[:len(a)-1]     // Truncate slice.
-//
-//	fmt.Printf("new length after removing contact: [%d]\n", len(a))
-//	return a
-//}
 
 func createEvent(contactData models.DataView, tenantID, busNo string) (models.StreamEventRequest, error) {
 	b, _ := strconv.ParseInt(busNo, 10, 32)
