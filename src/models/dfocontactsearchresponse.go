@@ -19,24 +19,26 @@ type DataView struct {
 	StatusUpdatedAt             string                        `json:"statusUpdatedAt"`
 	RoutingQueueId              string                        `json:"routingQueueId"`
 	RoutingQueuePriority        int32                         `json:"routingQueuePriority"`
-	InboxAssignee               int32                         `json:"inboxAssignee,omitempty"`
+	InboxAssignee               int64                         `json:"inboxAssignee,omitempty"`
 	InboxAssigneeLastAssignedAt string                        `json:"inboxAssigneeLastAssignedAt,omitempty"`
 	InboxAssigneeUser           DataInboxAssigneeUserView     `json:"inboxAssigneeUser,omitempty"`
 	OwnerAssigneeUser           DataOwnerAssigneeUserView     `json:"ownerAssigneeUser,omitempty"`
 	InboxPreAssigneeUser        DataInboxPreAssigneeUserView  `json:"inboxPreAssigneeUser,omitempty"`
-	OwnerAssignee               int32                         `json:"ownerAssignee,omitempty"`
-	EndUserRecipients           []DataEndUserRecipientsView   `json:"endUserRecipients,omitempty"`
+	OwnerAssignee               int64                         `json:"ownerAssignee,omitempty"`
+	EndUserRecipients           []Recipient                   `json:"endUserRecipients,omitempty"`
 	Recipients                  []DataRecipientsView          `json:"recipients,omitempty"`
 	RecipientsCustomers         []DataRecipientsCustomersView `json:"recipientsCustomers,omitempty"`
 	DetailUrl                   string                        `json:"detailUrl"`
 	AuthorEndUserIdentity       DataAuthorEndUserIdentityView `json:"authorEndUserIdentity,omitempty"`
 	Direction                   string                        `json:"direction"`
-	CreatedAt                   string                        `json:"createdAt"`
+	CreatedAt                   *CustomTimestamp              `json:"createdAt"`
 	InboxPreAssignee            int32                         `json:"inboxPreAssignee,omitempty"`
 	CustomFields                []DataCustomFieldsView        `json:"customerFields,omitempty"`
 	UserFingerprint             DataUserFingerprintView       `json:"userFingerprint,omitempty"`
 	Statistics                  DataStatisticsView            `json:"statistics,omitempty"`
 	EndUser                     DataEndUserView               `json:"endUser,omitempty"`
+	TenantID                    string
+	Error                       error
 }
 
 type DataInboxAssigneeUserView struct {
@@ -53,16 +55,17 @@ type DataInboxAssigneeUserView struct {
 }
 
 type DataOwnerAssigneeUserView struct {
-	Id            int32  `json:"id,omitempty"`
-	IncontactId   string `json:"incontactId,omitempty"`
-	EmailAddress  string `json:"emailaddress,omitempty"`
-	LoginUsername string `json:"loginUsername,omitempty"`
-	FirstName     string `json:"firstName,omitempty"`
-	Surname       string `json:"surname,omitempty"`
-	Nickname      string `json:"nickname,omitempty"`
-	ImageUrl      string `json:"imageUrl,omitempty"`
-	IsBotUser     bool   `json:"isBotUser,omitempty"`
-	IsSurveyUser  bool   `json:"isSurveyUser,omitempty"`
+	Id             int32  `json:"id,omitempty"`
+	IncontactId    string `json:"incontactId,omitempty"`
+	EmailAddress   string `json:"emailaddress,omitempty"`
+	LoginUsername  string `json:"loginUsername,omitempty"`
+	FirstName      string `json:"firstName,omitempty"`
+	Surname        string `json:"surname,omitempty"`
+	Nickname       string `json:"nickname,omitempty"`
+	ImageUrl       string `json:"imageUrl,omitempty"`
+	PublidImageUrl string `json:"publicImageUrl"`
+	IsBotUser      bool   `json:"isBotUser,omitempty"`
+	IsSurveyUser   bool   `json:"isSurveyUser,omitempty"`
 }
 
 type DataInboxPreAssigneeUserView struct {
@@ -78,7 +81,7 @@ type DataInboxPreAssigneeUserView struct {
 	IsSurveyUser  bool   `json:"isSurveyUser,omitempty"`
 }
 
-type DataEndUserRecipientsView struct {
+type Recipients struct {
 	EndUserIdOnExternalPlatform string `json:"idOnExternalPlatform,omitempty"`
 	EndUserName                 string `json:"name,omitempty"`
 	EndUserIsPrimary            bool   `json:"isPrimary,omitempty"`
@@ -107,6 +110,7 @@ type DataAuthorEndUserIdentityView struct {
 	LastName             string `json:"lastName"`
 	Nickname             string `json:"nickname"`
 	Image                string `json:"image"`
+	ExternalPlatformId   string `json:"externalPlatformId"`
 	Id                   string `json:"id"`
 	FullName             string `json:"fullName"`
 }

@@ -8,10 +8,14 @@ import (
 	"fmt"
 	"github.com/MyGoProjects/http-go-server/src/models"
 	"github.com/google/uuid"
-	db "github.com/inContact/orch-common/dbmappings"
+	pbm "github.com/inContact/orch-common/proto/digi/digimiddleware"
+	"github.com/inContact/orch-digital-middleware/pkg/digierrors"
 	"github.com/inContact/orch-digital-middleware/pkg/digiservice"
 	"github.com/inContact/orch-digital-middleware/pkg/digitransport"
+	"github.com/pkg/errors"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -19,12 +23,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type TenantIdsObj struct {
 	TenantIDs [1]string `json:"tenantIds"`
-	State     [5]string `json:"state"`
 }
 
 type DmwKnownContacts struct {
@@ -67,115 +71,260 @@ type DfoAuthTokenObj struct {
 }
 
 const (
-	regionRequest       string = "region - \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
-	envRequest          string = "environment - \"dev\", \"test\", \"staging\", \"prod\""
-	tenantGuidRequest   string = "tenantID (in GUID format)"
-	clientIdRequest     string = "clientId"
-	clientSecretRequest string = "clientSecret"
+	dmwGetStatesEndpoint            = "/getstatesbytenants"
+	dfoAuthTokenEndpoint            = "/token"
+	dfoContactSearchEndpoint        = "/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+	dfoContactByIdEndpoint          = "/contacts/"
+	DMWAPIURLPREFIX          string = "http://digi-shared-eks01-"
+	DFOAPIURLPREFIX          string = "https://api-de-"
+	DMWGRPCURIPREFIX         string = "digi-shared-eks01-"
+	regionRequest            string = "region - \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
+	envRequest               string = "environment - \"dev\", \"test\", \"staging\", \"prod\""
+	tenantGuidRequest        string = "tenantID (in GUID format)"
+	busNoRequest             string = "business unit number"
+	clientIdRequest          string = "clientId"
+	clientSecretRequest      string = "clientSecret"
+	batchSize                int    = 100
 )
 
-const CONTACTENDED = "ContactEnded"
-const CONTACTSTATEUPDATED = "ContactStateUpdated"
-const DMWAPIURLPREFIX = "http://digi-shared-eks01-"
-const DFOAPIURLPREFIX = "https://api-de-"
-
 func main() {
-	ctx := context.Background()
-	region, env, tenantId, clientId, clientSecret := "", "", "", "", ""
+	st := time.Now()
+	region, env, tenantId, busNo, clientId, clientSecret := "", "", "", "", "", ""
 	var tenants [1]string
+	var wg sync.WaitGroup
 
-	// Prompt for needed input data
-	//region = PromptForInputData("region", regionRequest)
-	//env = PromptForInputData("env", envRequest)
-	//tenantId = PromptForInputData("tenantId", tenantGuidRequest)
-	//clientId = PromptForInputData("clientCreds", clientIdRequest)
-	//clientSecret = PromptForInputData("clientCreds", clientSecretRequest)
+	//Prompt for needed input data
+	region = PromptForInputData("region", regionRequest)
+	env = PromptForInputData("env", envRequest)
+	tenantId = PromptForInputData("tenantId", tenantGuidRequest)
+	busNo = PromptForInputData("busNo", busNoRequest)
+	clientId = PromptForInputData("clientCreds", clientIdRequest)
+	clientSecret = PromptForInputData("clientCreds", clientSecretRequest)
 
-	region = "na1"
-	env = "dev"
-	tenantId = "11EB505F-7844-7680-923B-0242AC110003"
-	clientId = "cNqAL5N8CyGT5oMTTczpdSeDQnxTN2hyeg4m4QAqjY2s5"
-	clientSecret = "2ZLdiztGgAcPlHunzTX355M8Hx9fqHunNvXctE0iWYBru"
+	// This section used for debugging.  Comment out prompts above and uncomment below to fill in data.
+	//region = "na1"
+	//env = "dev"
+	//tenantId = "11EB505F-7844-7680-923B-0242AC110003"
+	//busNo = "15572"
+	//clientId = "cNqAL5N8CyGT5oMTTczpdSeDQnxTN2hyeg4m4QAqjY2s5"
+	//clientSecret = "2ZLdiztGgAcPlHunzTX355M8Hx9fqHunNvXctE0iWYBru"
 
 	// Build api call URIs
-	dmwContactStateApiUrl := buildUri("dmwGetStates", DMWAPIURLPREFIX, region, env)
-	dfoAuthTokenApiUrl := buildUri("dfoAuth", DFOAPIURLPREFIX, region, env)
-	dfoContactSearchApiUrl := buildUri("dfoContacts", DFOAPIURLPREFIX, region, env)
-	dfoContactByIdApiUrl := buildUri("dfoContactById", DFOAPIURLPREFIX, region, env)
-
-	// Get list of Digimiddleware known active contacts
-	tenants[0] = tenantId
-	dmwKnownContacts, err := GetDmwActiveContactStateData(dmwContactStateApiUrl, tenants)
-	if err != nil {
-		fmt.Printf("Error calling DMW GET ContactStates API.  Err: %v", err)
-	}
+	dmwContactStateApiUrl := BuildUri("dmwGetStates", DMWAPIURLPREFIX, region, env)
+	dfoAuthTokenApiUrl := BuildUri("dfoAuthToken", DFOAPIURLPREFIX, region, env)
+	dfoContactSearchApiUrl := BuildUri("dfoContactSearch", DFOAPIURLPREFIX, region, env)
+	dfoContactByIdApiUrl := BuildUri("dfoContactById", DFOAPIURLPREFIX, region, env)
+	dmwGrpcApiUrl := BuildUri("dmwGrpc", DMWGRPCURIPREFIX, region, env)
 
 	// Get DFO auth token
-	dfoAuthTokenObj, err := GetDfoAuthToken(dfoAuthTokenApiUrl, clientId, clientSecret)
-	if err != nil {
-		fmt.Printf("Error calling DFO 3.0 GET AuthToken API.  Err: %v", err)
-	}
+	var dfoAuthTokenObj DfoAuthTokenObj
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var cancel context.CancelFunc
+		ctx := context.Background()
+		var err error
+		t := time.Now()
+		ctx, cancel = context.WithTimeout(context.Background(), 1000*time.Millisecond)
+		fmt.Println("begin api call: GetDfoAuthToken")
+		dfoAuthTokenObj, err = GetDfoAuthToken(ctx, dfoAuthTokenApiUrl, clientId, clientSecret)
+		if err != nil {
+			fmt.Printf("error calling GetDfoAuthToken: [%v]\n", err)
+			return
+		}
+		cancel()
+		fmt.Printf("%s - done, duration=%s\n", "GetDfoAuthToken", time.Since(t))
+	}()
+	wg.Wait()
 
-	// Get list of DFO active contacts
-	dfoData, err := MakeDfoContactSearchApiCall(dfoContactSearchApiUrl, dfoAuthTokenObj)
-	if err != nil {
-		fmt.Printf("Error calling DFO 3.0 Contact Search API.  Err: %v", err)
-	}
+	// Get list of Digimiddleware known active contacts
+	var dmwKnownContacts DmwKnownContacts
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var cancel context.CancelFunc
+		ctx := context.Background()
+		var err error
+		t := time.Now()
+		tenants[0] = tenantId
+		ctx, cancel = context.WithTimeout(context.Background(), 1000*time.Millisecond)
+		fmt.Println("begin api call: GetDmwActiveContactStateData")
+		dmwKnownContacts, err = GetDmwActiveContactStateData(ctx, dmwContactStateApiUrl, tenants)
+		if err != nil {
+			fmt.Printf("error calling GetDmwActiveContactStateData: [%v]\n", err)
+			return
+		}
+		cancel()
+		fmt.Printf("%s - done, duration=%s, contacts=%d\n", "GetDmwActiveContactStateData", time.Since(t), len(dmwKnownContacts.Contacts))
+	}()
+
+	// Call DFO 3.0 GET Contact Search API to get list of DFO active contacts
+	var dfoData []models.DataView
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var cancel context.CancelFunc
+		ctx := context.Background()
+		var err error
+		t := time.Now()
+		ctx, cancel = context.WithTimeout(context.Background(), 1000*time.Millisecond)
+		fmt.Println("begin api call: MakeDfoContactSearchApiCall")
+		dfoData, err = MakeDfoContactSearchApiCall(ctx, dfoContactSearchApiUrl, dfoAuthTokenObj)
+		if err != nil {
+			fmt.Printf("error calling MakeDfoContactSearchApiCall: [%v]\n", err)
+			return
+		}
+		cancel()
+		fmt.Printf("%s - done, duration=%s, dfoActiveContacts=%d\n", "MakeDfoContactSearchApiCall", time.Since(t), len(dfoData))
+	}()
+	wg.Wait()
 
 	// Compare lists to get the contacts that exist in DMW but are closed in DFO.
-	deltaContacts := GetDeltaList(dmwKnownContacts, dfoData)
+	var deltaContacts DmwKnownContacts
 
-	// Call DFO 3.0 GET Contacts by contactId for each record in Delta list to obtain actual metadata for contact
-	actualMetaData, err := MakeDfoContactByIdApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, deltaContacts)
-	fmt.Println(actualMetaData)
-
-	//TODO: Call api to update DMW contact states to set contact to closed.
-	//for _, contact := range deltaContacts.Contacts {
-	//	var eventType string
-	//	var newState string
-	//	//var trigger fsm.Trigger
-	//	//var err error
-	//	if contact.newState > 0 {
-	//		eventType = CONTACTSTATEUPDATED
-	//	} else {
-	//		eventType = CONTACTENDED
-	//	}
-	//	contact = digiEventUpdateContact(contact.EventID, contact.newState, event.GetCreatedAt(), nil, nil, eventType, action, existingContact)
-	//
-	//}
-
-	// Create gRPC client to pass CaseEventUpdate to digimiddlware
-	middlewareEventService := createGrpcClient(ctx)
-
-	if middlewareEventService == nil {
-		return
+	if dmwKnownContacts.Contacts != nil {
+		fmt.Println("begin building list: buildDeltaList")
+		t := time.Now()
+		deltaContacts = buildDeltaList(dmwKnownContacts, dfoData)
+		fmt.Printf("%s - done, duration=%s, deltaContacts=%d\n", "buildDeltaList", time.Since(t), len(deltaContacts.Contacts))
+	} else {
+		fmt.Println("there were no contacts in dmw list - no need to process updates")
 	}
 
-	//TODO: build caseUpdateEvent to pass in place of nil below
-	middlewareEventService.CaseEventUpdate(ctx, nil)
-	// TODO: pass middlewareEventService to what will be making the Grpc service call
+	// Batch and Process records to digimiddleware using gRPC
+	if len(deltaContacts.Contacts) > 0 {
+		process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, tenantId, busNo)
+	} else {
+		fmt.Println("comparison of lists returned 0 contacts to update - no need to process updates")
+	}
+
+	fmt.Printf("update case state service completed - totalDuration = %s\n", time.Since(st))
 }
 
-func buildUri(apiType string, apiPrefix string, region string, env string) string {
+// process batches the data into specified batchSize to process
+func process(data []DmwKnownContact, dfoAuthTokenObj DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, tenantId, busNo string) {
+	var batchCount int
+	for start, end := 0, 0; start <= len(data)-1; start = end {
+		var err error
+		var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
+
+		end = start + batchSize
+		if end > len(data) {
+			end = len(data)
+		}
+		batch := data[start:end]
+
+		t := time.Now()
+		sanitizedUpdateRecords = processBatch(batch, dfoContactByIdApiUrl, dfoAuthTokenObj, tenantId, busNo)
+		fmt.Printf("%s [%d] - done, duration=%s, total records to update=%d\n", "processBatch", batchCount, time.Since(t), len(sanitizedUpdateRecords))
+		batchCount++
+
+		// Push sanitizedUpdateRecords to digimiddleware via gRPC
+		if sanitizedUpdateRecords != nil {
+			fmt.Println("grpc call start: sendUpdateRecordsToMiddleware")
+			t := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+			err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
+				Updates:    sanitizedUpdateRecords,
+				ReceivedAt: timestamppb.Now(),
+			}, dmwGrpcApiUrl)
+
+			if err != nil {
+				fmt.Printf("error making grpc call to send update records to middleware: [%v]\n", err)
+				return
+			}
+			cancel()
+			fmt.Printf("%s - done, duration=%s, count=%d\n", "sendUpdateRecordsToMiddleware", time.Since(t), len(sanitizedUpdateRecords))
+		} else {
+			fmt.Println("there were no contacts added to sanitizedUpdateRecords list - no need to process updates")
+		}
+	}
+}
+
+// processBatch calls DFO 3.0 GET Contact to obtain contact data to build the case update event
+func processBatch(list []DmwKnownContact, dfoContactByIdApiUrl string, dfoAuthTokenObj DfoAuthTokenObj, tenantId, busNo string) []*pbm.CaseUpdateEvent {
+	var count int32
+	var mtx sync.Mutex
+	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
+	var wg sync.WaitGroup
+
+	fmt.Printf("begin processing batch %d\n", count)
+	for _, contact := range list {
+		count++
+		wg.Add(1)
+		go func(contact DmwKnownContact, count int32) {
+			var contactData models.DataView
+			var updateMessage *pbm.CaseUpdateEvent
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+
+			// Call DFO 3.0 GET Contacts by contactId for each record in Delta list to obtain actual metadata for contact
+			contactData = MakeDfoContactByIdApiCall(ctx, dfoContactByIdApiUrl, dfoAuthTokenObj, contact)
+
+			if contactData.Id != "" {
+				// Create the Update Event object from the contactData received from DFO
+				event, err := createEvent(contactData, tenantId, busNo)
+				if err != nil {
+					fmt.Println(err)
+					return
+				} else {
+					fmt.Printf("event object created for contactId: [%v]\n", event.Data.Case.ID)
+				}
+
+				// Using the Event Object, create the CaseUpdateEvent object
+				if event.Data.Case.ID != "" {
+					updateMessage, err = makeCaseUpdate(event)
+					if err != nil {
+						fmt.Println(err)
+						return
+					} else {
+						fmt.Printf("update event object created: brand: %+v, case: %+v, channel: %+v, createdAt: %+v, eventId: %v\n", updateMessage.Brand, updateMessage.Case, updateMessage.Channel, updateMessage.CreatedAt, updateMessage.EventID)
+					}
+
+					if updateMessage != nil {
+						mtx.Lock()
+						sanitizedUpdateRecords = append(sanitizedUpdateRecords, updateMessage)
+						mtx.Unlock()
+					}
+				} else {
+					fmt.Printf("unable to create event object: contact was empty - contactId: %v\n", contact.ContactID)
+				}
+			}
+			cancel()
+		}(contact, count)
+	}
+	wg.Wait()
+
+	return sanitizedUpdateRecords
+}
+
+func BuildUri(apiType string, apiPrefix string, region string, env string) string {
+	fmt.Printf("%s uri for requested region [%s] and env [%s] -- ", apiType, region, env)
 	uri := ""
 	switch apiType {
 	case "dmwGetStates":
 		uri = apiPrefix + region + ".omnichannel." + env + ".internal:8085/digimiddleware/getstatesbytenants"
-	case "dfoAuth":
+		fmt.Println(uri)
+	case "dfoAuthToken":
 		switch env {
 		case "prod":
 			uri = apiPrefix + region + ".niceincontact.com/engager/2.0/token"
+			fmt.Println(uri)
 		case "dev", "test", "staging":
 			uri = apiPrefix + region + "." + env + ".niceincontact.com/engager/2.0/token"
+			fmt.Println(uri)
 		default:
 			break
 		}
-	case "dfoContacts":
+	case "dfoContactSearch":
 		switch env {
 		case "prod":
 			uri = apiPrefix + region + ".niceincontact.com/dfo/3.0/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+			fmt.Println(uri)
 		case "dev", "test", "staging":
 			uri = apiPrefix + region + "." + env + ".niceincontact.com/dfo/3.0/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+			fmt.Println(uri)
 		default:
 			break
 		}
@@ -183,11 +332,16 @@ func buildUri(apiType string, apiPrefix string, region string, env string) strin
 		switch env {
 		case "prod":
 			uri = apiPrefix + region + ".niceincontact.com/dfo/3.0/contacts/"
+			fmt.Println(uri)
 		case "dev", "test", "staging":
 			uri = apiPrefix + region + "." + env + ".niceincontact.com/dfo/3.0/contacts/"
+			fmt.Println(uri)
 		default:
 			break
 		}
+	case "dmwGrpc":
+		uri = apiPrefix + region + ".omnichannel." + env + ".internal:9884"
+		fmt.Println(uri)
 	default:
 		break
 	}
@@ -210,7 +364,7 @@ func PromptForInputData(inputType string, requestType string) string {
 
 // GetInputData requests user input and returns value
 func GetInputData(inputType string) string {
-	fmt.Printf("Input %v': ", inputType)
+	fmt.Printf("input %v: ", inputType)
 	reader := bufio.NewReader(os.Stdin)
 
 	response, err := reader.ReadString('\n')
@@ -229,7 +383,7 @@ func ValidateResponse(inputValue string, inputType string, inputValueValid bool)
 		case "na1", "au1", "eu1", "jp1", "uk1", "ca1":
 			inputValueValid = true
 		default:
-			fmt.Println("Input value is not a valid region name (\"na1\", \"au1\", \"eu1\", \"jp1\", \"uk1\", \"ca1\")")
+			fmt.Println("Input value is not a valid region name: (\"na1\", \"au1\", \"eu1\", \"jp1\", \"uk1\", \"ca1\")")
 			inputValueValid = false
 		}
 	case "env":
@@ -237,7 +391,7 @@ func ValidateResponse(inputValue string, inputType string, inputValueValid bool)
 		case "dev", "test", "staging", "prod":
 			inputValueValid = true
 		default:
-			fmt.Println("Input value is not a valid environment name (\"dev\", \"test\", \"staging\", \"prod\")")
+			fmt.Println("Input value is not a valid environment name: (\"dev\", \"test\", \"staging\", \"prod\")")
 			inputValueValid = false
 		}
 	case "tenantId":
@@ -254,6 +408,13 @@ func ValidateResponse(inputValue string, inputType string, inputValueValid bool)
 		} else {
 			inputValueValid = true
 		}
+	case "busNo":
+		if _, err := strconv.ParseInt(inputValue, 10, 32); err != nil {
+			fmt.Printf("Input value is not a valid integer: [%v]\n", inputValue)
+			inputValueValid = false
+		} else {
+			inputValueValid = true
+		}
 	default:
 		return inputValueValid
 	}
@@ -261,16 +422,11 @@ func ValidateResponse(inputValue string, inputType string, inputValueValid bool)
 }
 
 // GetDmwActiveContactStateData calls the Digimiddleware api POST digimiddleware/getstatesbytenants to get the list of contacts stored in DynamoDB
-func GetDmwActiveContactStateData(apiUrl string, tenants [1]string) (DmwKnownContacts, error) {
+func GetDmwActiveContactStateData(ctx context.Context, apiUrl string, tenants [1]string) (DmwKnownContacts, error) {
 	var dmwKnownContacts DmwKnownContacts
 	contentType := "application/json"
 	var tenantIdsObj TenantIdsObj
 	tenantIdsObj.TenantIDs = tenants
-	tenantIdsObj.State[0] = "new"
-	tenantIdsObj.State[1] = "resolved"
-	tenantIdsObj.State[2] = "pending"
-	tenantIdsObj.State[3] = "escalated"
-	tenantIdsObj.State[4] = "open"
 
 	bodyJson, _ := json.Marshal(tenantIdsObj)
 	reader := bytes.NewReader(bodyJson)
@@ -287,7 +443,7 @@ func GetDmwActiveContactStateData(apiUrl string, tenants [1]string) (DmwKnownCon
 	if response.StatusCode == 200 {
 		responseData, err = ioutil.ReadAll(response.Body)
 		if err != nil {
-			log.Fatal(err)
+			fmt.Print(err.Error())
 			return dmwKnownContacts, err
 		}
 	}
@@ -295,7 +451,7 @@ func GetDmwActiveContactStateData(apiUrl string, tenants [1]string) (DmwKnownCon
 	if responseData != nil {
 		err := json.Unmarshal(responseData, &dmwKnownContacts)
 		if err != nil {
-			fmt.Printf("Cannot unmarshal dmwResponse.  Error: %v", err)
+			fmt.Printf("cannot unmarshal dmw response: [%v]\n", err)
 			return dmwKnownContacts, err
 		}
 	}
@@ -308,7 +464,7 @@ func GetDmwActiveContactStateData(apiUrl string, tenants [1]string) (DmwKnownCon
 }
 
 // GetDfoAuthToken calls the DFO api POST engager/2.0/token to get a bearer token for subsequent DFO api calls
-func GetDfoAuthToken(apiUrl string, clientId string, clientSecret string) (DfoAuthTokenObj, error) {
+func GetDfoAuthToken(ctx context.Context, apiUrl string, clientId string, clientSecret string) (DfoAuthTokenObj, error) {
 	contentType := "application/json"
 	var dfoAuthTokenBody DfoAuthTokenBody
 	dfoAuthTokenBody.GrantType = "client_credentials"
@@ -331,7 +487,7 @@ func GetDfoAuthToken(apiUrl string, clientId string, clientSecret string) (DfoAu
 	if response.StatusCode == 200 {
 		responseData, err = ioutil.ReadAll(response.Body)
 		if err != nil {
-			log.Fatal(err)
+			fmt.Print(err.Error())
 			return dfoAuthTokenObj, err
 		}
 	}
@@ -339,30 +495,36 @@ func GetDfoAuthToken(apiUrl string, clientId string, clientSecret string) (DfoAu
 	if responseData != nil {
 		err := json.Unmarshal(responseData, &dfoAuthTokenObj)
 		if err != nil {
-			fmt.Printf("Cannot unmarshal dfoAuthToken. Error: %v", err)
+			fmt.Printf("cannot unmarshal dfo auth token: [%v]\n", err)
 			return dfoAuthTokenObj, err
 		}
 	} else {
-		fmt.Println("DfoAuthToken was null or empty.")
+		fmt.Println("dfo auth token was null or empty")
 		return dfoAuthTokenObj, err
 	}
+
+	fmt.Println("dfo auth token successfully retrieved")
 
 	return dfoAuthTokenObj, err
 }
 
 // MakeDfoContactSearchApiCall calls the DFO 3.0 GET Contact Search Api then loops until all data is retrieved (api only returns 25 records at a time)
-func MakeDfoContactSearchApiCall(dfoContactSearchApiUrl string, dfoAuthTokenObj DfoAuthTokenObj) ([]models.DataView, error) {
+func MakeDfoContactSearchApiCall(ctx context.Context, dfoContactSearchApiUrl string, dfoAuthTokenObj DfoAuthTokenObj) ([]models.DataView, error) {
 	var dfoActiveContactList models.DfoContactSearchResponse
 	var dfoData []models.DataView
 	var err error
 	var hits int32 = 25
+	var mtx sync.Mutex
 
 	// Call DFO 3.0 GET Contact Search which returns 1st 25 records
-	dfoResponse := GetDfoActiveContactList(dfoContactSearchApiUrl, dfoAuthTokenObj)
+	dfoResponse, err := MakeDfoApiCall(ctx, dfoContactSearchApiUrl, dfoAuthTokenObj, "")
+	if err != nil {
+		return dfoData, err
+	}
 	if dfoResponse != nil || len(dfoResponse) > 0 {
 		err := json.Unmarshal(dfoResponse, &dfoActiveContactList)
 		if err != nil {
-			fmt.Printf("Cannot unmarshal dfoResponse to full object.  Error: %v", err)
+			fmt.Printf("cannot unmarshal dfo response to full object: [%v]\n", err)
 			return dfoData, err
 		}
 	} else {
@@ -370,33 +532,41 @@ func MakeDfoContactSearchApiCall(dfoContactSearchApiUrl string, dfoAuthTokenObj 
 		return dfoData, err
 	}
 
+	fmt.Printf("GetDfoActiveContactList returned [%v] total hits\n", dfoActiveContactList.Hits)
+
 	// Append first 25 Data records to Data list
+	mtx.Lock()
 	dfoData = append(dfoData, dfoActiveContactList.Data...)
+	mtx.Unlock()
 
 	if dfoActiveContactList.Hits > 25 {
 		// Sleep for 1 sec between calls to not overload the GET Contact Search api
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		for hits <= dfoActiveContactList.Hits {
 			dfoContactSearchApiUrlSt := dfoContactSearchApiUrl + "&scrollToken=" + dfoActiveContactList.ScrollToken
 			hits += 25
 
 			// Call DFO 3.0 GET Contact Search to get next 25 records
-			dfoResponse = GetDfoActiveContactList(dfoContactSearchApiUrlSt, dfoAuthTokenObj)
-			fmt.Printf("dfoResponse [%v]: ", hits)
+			fmt.Printf("calling GetDmwActiveContactStateData to get next set of records up to [%v]\n", hits)
+			dfoResponse, err = MakeDfoApiCall(ctx, dfoContactSearchApiUrlSt, dfoAuthTokenObj, "")
+			if err != nil {
+				return dfoData, err
+			}
 
 			if dfoResponse != nil {
 				err := json.Unmarshal(dfoResponse, &dfoActiveContactList)
 				if err != nil {
-					fmt.Printf("Cannot unmarshal dfoResponse to full object.  Error: %v", err)
+					fmt.Printf("Cannot unmarshal dfo response to full object.  Error: [%v]\n", err)
 					return dfoData, err
 				}
 			}
 
-			// Append next 25 Data records to Data list
+			// Append next set of Data records to Data list
+			mtx.Lock()
 			dfoData = append(dfoData, dfoActiveContactList.Data...)
+			mtx.Unlock()
 		}
 	}
-
 	sort.SliceStable(dfoData, func(i, j int) bool {
 		return dfoData[i].Id < dfoData[j].Id
 	})
@@ -404,84 +574,45 @@ func MakeDfoContactSearchApiCall(dfoContactSearchApiUrl string, dfoAuthTokenObj 
 	return dfoData, err
 }
 
-// GetDfoActiveContactList calls DFO 3.0 api GET Contact Search which returns a list of active contacts for tenant auth token provided
-func GetDfoActiveContactList(apiUrl string, dfoAuthTokenObj DfoAuthTokenObj) []byte {
-	var bearer = dfoAuthTokenObj.TokenType + " " + dfoAuthTokenObj.AccessToken
-	var responseData []byte
-
-	// Create a new request using http
-	req, err := http.NewRequest("GET", apiUrl, nil)
-
-	// add authorization header and content-type to the req
-	req.Header.Add("Authorization", bearer)
-	req.Header.Add("Content-Type", "application/json")
-
-	// Send req using http Client
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Println("Error on response.\n[ERROR] -", err)
-	}
-	defer resp.Body.Close()
-
-	responseData, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Println("Error while reading the response bytes:", err)
-	}
-
-	return responseData
-}
-
-// GetDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
-func GetDeltaList(dmwKnownContacts DmwKnownContacts, dfoData []models.DataView) DmwKnownContacts {
+// buildDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
+func buildDeltaList(dmwKnownContacts DmwKnownContacts, dfoData []models.DataView) DmwKnownContacts {
 	type DmwContacts []DmwKnownContact
 	deltaArray := DmwContacts{}
 	var deltaList DmwKnownContacts
+	foundCount := 0
+	notFoundCount := 0
+	alreadyClosedCount := 0
 
 	// Loop through DmwKnownContacts and check each contact data in DfoActiveContacts to see if we find a match
 	for _, contact := range dmwKnownContacts.Contacts {
 		found := false
-		requiresUpdate := false
-		var realContactState db.InDataContactState
+		shouldClose := false
 		// Only compare contact with DFO data if contact is not closed (18)
 		if contact.CurrentContactState != 18 {
 			// Compare the data from DFO with the DMW data
 			for _, d := range dfoData {
+				shouldClose = false
 				dataId, _ := strconv.ParseInt(d.Id, 10, 64)
-				// Check if there is a match for an active contact in DfoData
 				if contact.ContactID == dataId {
 					found = true
-					// Determine what the correct current contact state should be based on the dfoData.
-					realContactState = determineContactStateFromData(d.InboxAssigneeUser.IncontactId, d.RoutingQueueId, d.Status)
-					// If contact requiresUpdate and states match, no need to update state.
-					if contact.CurrentContactState == int32(realContactState) {
-						break
-					} else {
-						requiresUpdate = true
-					}
+					foundCount++
+					fmt.Printf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*DfoContactState*[%s]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, d.Status, contact.CurrentContactDate)
+					break
+				} else {
+					shouldClose = true
 				}
 			}
 
-			// If no match in dfoData, then we need to update contact to closed
 			if !found {
-				requiresUpdate = true
+				notFoundCount++
+				fmt.Printf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*DfoContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, 18, contact.CurrentContactDate)
 			}
+		} else {
+			alreadyClosedCount++
 		}
 
-		// If no match is requiresUpdate or state needs to be updated, add contact data to deltaList
-		if requiresUpdate {
-			//fmt.Printf("ContactID*[%v]*CurrentContactState*[%v]*RealContactState*[%v]*CurrentContactDate*[%v]*Found*[%v]*RequiresUpdate*[%v]\n", contact.ContactID, contact.CurrentContactState, realContactState, contact.CurrentContactDate, found, requiresUpdate)
-
-			//contact.CurrentContactDate = time.Now().String() //TODO: do we have to find the real time it was closed?
-			contact.EventID = uuid.NewString()
-
-			if found {
-				contact.CurrentContactState = int32(realContactState)
-			} else {
-				contact.CurrentContactState = int32(db.InDataContactState_EndContact)
-			}
-
-			// TODO: We may not need all of this, maybe just the contactIds to send back to DFO to get the latest status
+		// If no match is found and not already closed, add contact data to deltaList
+		if shouldClose {
 			delta := DmwKnownContact{
 				ContactID:                   contact.ContactID,
 				MasterContactID:             contact.MasterContactID,
@@ -496,7 +627,7 @@ func GetDeltaList(dmwKnownContacts DmwKnownContacts, dfoData []models.DataView) 
 				StateIndex:                  contact.StateIndex,
 				CaseIDString:                contact.CaseIDString,
 				DigitalContactState:         contact.DigitalContactState,
-				PreviousQueueID:             contact.PreviousQueueID, // TODO: do I need to figure out the true previous data for these?
+				PreviousQueueID:             contact.PreviousQueueID,
 				PreviousAgentUserID:         contact.PreviousAgentUserID,
 				PreviousContactState:        contact.PreviousContactState,
 				PreviousContactDate:         contact.PreviousContactDate,
@@ -505,169 +636,285 @@ func GetDeltaList(dmwKnownContacts DmwKnownContacts, dfoData []models.DataView) 
 			}
 
 			deltaArray = append(deltaArray, delta)
-
 			deltaList = DmwKnownContacts{
 				Contacts: deltaArray,
 			}
-			fmt.Printf("ContactID*[%v]*CurrentContactState*[%v]*RealContactState*[%v]*CurrentContactDate*[%v]*Found*[%v]*RequiresUpdate*[%v]\n", delta.ContactID, delta.CurrentContactState, realContactState, delta.CurrentContactDate, found, requiresUpdate)
-
 		}
 	}
 
+	fmt.Printf("total dmwKnownContacts: %d\n", len(dmwKnownContacts.Contacts))
+	fmt.Printf("total contacts that were already closed (will not be updated): %d\n", alreadyClosedCount)
+	fmt.Printf("total contacts that were not found (will be updated): %d\n", notFoundCount)
+	fmt.Printf("total contacts that were found (will not be updated): %d\n", foundCount)
 	return deltaList
 }
 
-// MakeDfoContactByIdApiCall loops through the delta list of contacts and returns the closedContact metadata
-func MakeDfoContactByIdApiCall(dfoContactByIdApiUrl string, dfoAuthTokenObj DfoAuthTokenObj, deltaList DmwKnownContacts) ([]models.DataView, error) {
+// MakeDfoContactByIdApiCall
+func MakeDfoContactByIdApiCall(ctx context.Context, dfoContactByIdApiUrl string, dfoAuthTokenObj DfoAuthTokenObj, contact DmwKnownContact) models.DataView {
 	var dfoClosedContactData models.DataView
-	var dfoData []models.DataView
-	var err error
 
-	for _, contact := range deltaList.Contacts {
-		// Sleep for 1 sec between calls to not overload the GET Contact Search api
-		time.Sleep(1000 * time.Millisecond)
-		dfoResponse := GetDfoContactById(dfoContactByIdApiUrl, dfoAuthTokenObj, strconv.Itoa(int(contact.ContactID)))
-		if dfoResponse != nil || len(dfoResponse) > 0 {
-			err := json.Unmarshal(dfoResponse, &dfoClosedContactData)
-			if err != nil {
-				fmt.Printf("Cannot unmarshal dfoResponse to full object.  Error: %v", err)
-				return dfoData, err
-			}
-		} else {
-			fmt.Println("MakeDfoContactByIdApiCall returned 0 records")
+	dfoResponse, respErr := MakeDfoApiCall(ctx, dfoContactByIdApiUrl, dfoAuthTokenObj, strconv.Itoa(int(contact.ContactID)))
+	if respErr != nil {
+		fmt.Println(respErr)
+	} else if dfoResponse != nil || len(dfoResponse) > 0 {
+		err := json.Unmarshal(dfoResponse, &dfoClosedContactData)
+		if err != nil {
+			fmt.Println(err)
 		}
-
-		// Append next 25 Data records to Data list
-		dfoData = append(dfoData, dfoClosedContactData)
+		fmt.Printf("success: received dfo data for contactId: [%d]\n", contact.ContactID)
 	}
 
-	return dfoData, err
+	return dfoClosedContactData
 }
 
-// GetDfoContactById calls DFO 3.0 GET contacts with contactID and returns the response object
-func GetDfoContactById(dfoContactByIdApiUrl string, dfoAuthTokenObj DfoAuthTokenObj, contactId string) []byte {
+// MakeDfoApiCall calls DFO 3.0 APIs and returns the response object
+func MakeDfoApiCall(ctx context.Context, apiUrl string, dfoAuthTokenObj DfoAuthTokenObj, contactId string) ([]byte, error) {
 	var bearer = dfoAuthTokenObj.TokenType + " " + dfoAuthTokenObj.AccessToken
-	apiUrl := dfoContactByIdApiUrl + contactId
 	var responseData []byte
+
+	if contactId != "" {
+		apiUrl = apiUrl + contactId
+	}
 
 	// Create a new request using http
 	req, err := http.NewRequest("GET", apiUrl, nil)
 
-	// add authorization header and content-type to the req
-	req.Header.Add("Authorization", bearer)
-	req.Header.Add("Content-Type", "application/json")
+	if err != nil {
+		fmt.Printf("new http request returned an error: [%v]\n", err)
+		return responseData, err
+	}
+	if req != nil {
+		// add authorization header and content-type to the req
+		req.Header.Add("Authorization", bearer)
+		req.Header.Add("Content-Type", "application/json")
+	}
 
 	// Send req using http Client
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Println("Error on response.\n[ERROR] -", err)
+		fmt.Printf("error connecting to host\n[ERROR] - %v\n", err)
+		return responseData, err
 	}
 	defer resp.Body.Close()
 
-	responseData, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Println("Error while reading the response bytes:", err)
+	if resp.StatusCode == 200 {
+		responseData, err = ioutil.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Printf("error reading response bytes: %v\n", err)
+			return responseData, err
+		}
+	} else {
+		err = fmt.Errorf("error calling dfo api for contact %s: %v", contactId, resp.Status)
+		return responseData, err
 	}
 
-	return responseData
+	return responseData, err
 }
 
-// determineContactStateFromData determines contactState from digital contact state and details
-func determineContactStateFromData(agentUserID, queueID, digitalContactState string) db.InDataContactState {
-	var contactState db.InDataContactState
-	switch digitalContactState {
-	case "closed", "trashed":
-		contactState = db.InDataContactState_EndContact
-	case "pending", "escalated", "resolved":
-		if agentUserID != "" {
-			contactState = db.InDataContactState_Active
-		} else {
-			contactState = db.InDataContactState_PostQueue
-		}
-	case "new", "open":
-		if agentUserID != "" {
-			contactState = db.InDataContactState_Active
-		} else if queueID == "" {
-			contactState = db.InDataContactState_PreQueue
-		} else {
-			contactState = db.InDataContactState_InQueue
-		}
-	default:
-		contactState = db.InDataContactState_Undefined
+//func removeFromDeltaList(i int32, contact DmwKnownContact, deltaListContacts []DmwKnownContact) []DmwKnownContact {
+//	fmt.Printf("removing contact from deltaList: [%d] - ", contact.ContactID)
+//	a := deltaListContacts
+//	var x DmwKnownContact
+//
+//	copy(a[i:], a[i+1:]) // Shift a[i+1:] left one index.
+//	a[len(a)-1] = x      // Erase last element (write zero value - x is empty dataType).
+//	//a = a[:len(a)-1]     // Truncate slice.
+//
+//	fmt.Printf("new length after removing contact: [%d]\n", len(a))
+//	return a
+//}
+
+func createEvent(contactData models.DataView, tenantID, busNo string) (models.StreamEventRequest, error) {
+	b, _ := strconv.ParseInt(busNo, 10, 32)
+	businessUnitNo := int32(b)
+	var err error
+	var event models.StreamEventRequest
+
+	if contactData.Error == nil {
+		channelParts := strings.Split(contactData.ChannelId, "_")
+
+		event.CreatedAt = contactData.CreatedAt
+		event.EventID = uuid.New().String()
+		event.EventObject = models.EventObject_Case
+		event.EventType = 1
+		event.Data.Brand.ID = 9999 //we don't use this so hardCode anything
+		event.Data.Brand.TenantID = tenantID
+		event.Data.Brand.BusinessUnitID = businessUnitNo
+		event.Data.Case.ID = contactData.Id
+		event.Data.Case.ContactId = contactData.ContactGuid
+		event.Data.Case.CustomerContactId = contactData.CustomerContactId
+		event.Data.Case.DetailUrl = contactData.DetailUrl
+		event.Data.Case.EndUserRecipients = contactData.EndUserRecipients
+		event.Data.Case.InboxAssignee = contactData.InboxAssignee
+		event.Data.Case.InteractionId = contactData.InteractionId
+		event.Data.Case.Direction = contactData.Direction
+		event.Data.Case.ThreadId = contactData.ThreadId
+		event.Data.Case.RoutingQueueId = contactData.RoutingQueueId
+		event.Data.Case.RoutingQueuePriority = contactData.RoutingQueuePriority
+		event.Data.Case.Status = contactData.Status
+		event.Data.Case.OwnerAssignee = contactData.OwnerAssignee
+		event.Data.Channel.ID = contactData.ChannelId
+		event.Data.Channel.Name = "channelName"
+		event.Data.Channel.IntegrationBoxIdentifier = channelParts[0]
+		event.Data.Channel.IDOnExternalPlatform = channelParts[1]
+		event.Data.Channel.IsPrivate = true
+		event.Data.Channel.RealExternalPlatformID = channelParts[0]
+
+		fmt.Printf("update event list object:\n %+v\n", event.Data.Case)
+	} else {
+		err = fmt.Errorf("unable to create update event object for contactId: %s, tenant: %s. MakeDfoContactByIdApiCall returned error: %v", contactData.Id, contactData.TenantID, contactData.Error)
 	}
-	return contactState
+
+	return event, err
 }
 
-func createGrpcClient(ctx context.Context) digiservice.GrpcService {
-	digimiddlewareGrpcAddr := "digi-shared-eks01-na1.omnichannel.dev.internal:9884"
-	conn, err := grpc.Dial(digimiddlewareGrpcAddr, grpc.WithInsecure())
-	if err != nil {
-		fmt.Printf("initialization of digimiddleware gRPC client failed with err: %w", err)
+// Turn the StreamEventRequest into a CaseUpdateEvent protobuf object to be sent via GRPC
+func makeCaseUpdate(event models.StreamEventRequest) (*pbm.CaseUpdateEvent, error) {
+	var err error
+	message := pbm.CaseUpdateEvent{
+		EventID:   event.EventID,
+		CreatedAt: getCreatedAt(event),
+		Brand: &pbm.Brand{
+			ID:             event.Data.Brand.ID,
+			TenantID:       event.Data.Brand.TenantID,
+			BusinessUnitID: event.Data.Brand.BusinessUnitID,
+		},
+		Channel: &pbm.Channel{
+			ID:                       event.Data.Channel.ID,
+			Name:                     event.Data.Channel.Name,
+			IntegrationBoxIdentifier: event.Data.Channel.IntegrationBoxIdentifier,
+			IdOnExternalPlatform:     event.Data.Channel.IDOnExternalPlatform,
+			IsPrivate:                event.Data.Channel.IsPrivate,
+			RealExternalPlatformID:   event.Data.Channel.RealExternalPlatformID,
+		},
+		Case: makeCase(event),
+		Type: pbm.CaseUpdateType_TYPE_STATUS_CHANGED,
+	}
+
+	if message.Case == nil || message.Brand.TenantID == "" {
+		err = fmt.Errorf("non-shippable case update event - case or tenant id empty - case: %+v, tenantId: %s\n", message.Case, message.Brand.TenantID)
+		return nil, err
+	}
+
+	fmt.Printf("case update message:\n %+v\n", message.Case)
+
+	return &message, nil
+}
+
+func getCreatedAt(event models.StreamEventRequest) (ts *timestamppb.Timestamp) {
+	if event.CreatedAtWithMilliseconds != nil {
+		return event.CreatedAtWithMilliseconds.Timestamp()
+	}
+	return event.CreatedAt.Timestamp()
+}
+
+func makeCase(event models.StreamEventRequest) (caseEvent *pbm.Case) {
+	caseEvent = &pbm.Case{
+		ID:                   event.Data.Case.ID,
+		ContactGuid:          event.Data.Case.ContactId,
+		CustomerContactID:    event.Data.Case.CustomerContactId,
+		DetailUrl:            event.Data.Case.DetailUrl,
+		EndUserRecipients:    recipientMap(event.Data.Case.EndUserRecipients),
+		InboxAssignee:        event.Data.Case.InboxAssignee,
+		InteractionID:        event.Data.Case.InteractionId,
+		IsOutbound:           strings.ToLower(event.Data.Case.Direction) == "outbound",
+		PostID:               event.Data.Case.ThreadId,
+		RoutingQueueID:       event.Data.Case.RoutingQueueId,
+		RoutingQueuePriority: event.Data.Case.RoutingQueuePriority,
+		Status:               event.Data.Case.Status,
+		OwnerAssignee:        event.Data.Case.OwnerAssignee,
+	}
+	if caseEvent.IsOutbound {
+		caseEvent.UserInfo = &pbm.Case_AuthorUser{
+			AuthorUser: &pbm.User{
+				ID:            event.Data.Case.AuthorUser.ID,
+				IncontactID:   event.Data.Case.AuthorUser.InContactID,
+				EmailAddress:  event.Data.Case.AuthorUser.EmailAddress,
+				LoginUsername: event.Data.Case.AuthorUser.LoginUsername,
+				FirstName:     event.Data.Case.AuthorUser.FirstName,
+				Surname:       event.Data.Case.AuthorUser.SurName,
+			},
+		}
+	} else {
+		caseEvent.UserInfo = &pbm.Case_AuthorEndUserIdentity{
+			AuthorEndUserIdentity: &pbm.EndUserIdentity{
+				ID:                   event.Data.Case.AuthorEndUserIdentity.ID,
+				IdOnExternalPlatform: event.Data.Case.AuthorEndUserIdentity.IdOnExternalPlatform,
+				FullName:             event.Data.Case.AuthorEndUserIdentity.FullName,
+			},
+		}
+	}
+	if caseEvent.ID == "" || caseEvent.Status == "" {
+		return nil
+	}
+	return caseEvent
+}
+
+// Turn the StreamEventRequest recipients list into the corresponding Recipients protobuf list.
+func recipientMap(recipients []models.Recipient) []*pbm.Recipient {
+	results := make([]*pbm.Recipient, len(recipients))
+	for i, r := range recipients {
+		results[i] = &pbm.Recipient{
+			IdOnExternalPlatform: r.IdOnExternalPlatform,
+			Name:                 r.Name,
+			IsPrimary:            r.IsPrimary,
+			IsPrivate:            r.IsPrivate,
+		}
+	}
+	return results
+}
+
+func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEvents, dmwGrpcApiUrl string) error {
+	if len(events.Updates) == 0 {
+		fmt.Println("no case update events were created")
 		return nil
 	} else {
-		fmt.Println("gRPC client initialized")
+		fmt.Printf("total count of case event updates, [%v]\n", len(events.Updates))
+	}
+
+	op := digierrors.Op("sendUpdateRecordsToMiddleware")
+
+	// Create gRPC client to pass CaseEventUpdate to digimiddlware
+	fmt.Println("begin grpc call: createGrpcClient")
+	t := time.Now()
+	middlewareEventService := createGrpcClient(ctx, dmwGrpcApiUrl)
+	fmt.Printf("%s - done, duration=%s\n", "createGrpcClient", time.Since(t))
+
+	if middlewareEventService == nil {
+		return nil
+	}
+
+	fmt.Println("begin grpc call: CaseEventUpdate")
+	t = time.Now()
+	response, err := middlewareEventService.CaseEventUpdate(ctx, events)
+	fmt.Printf("%s - done, duration=%s\n", "CaseEventUpdate", time.Since(t))
+
+	if err != nil {
+		// Failure to deliver to Middleware (e.g., network errors, etc.)
+		return digierrors.E(op, digierrors.IsRetryable, zapcore.ErrorLevel, err)
+	}
+
+	// If we got an error response, then the Middleware indicates this is retryable. Return an error here.
+	errStr := response.GetErr()
+	if errStr != "" {
+		fmt.Printf("received error from case update grpc: [%v]\n", errStr)
+		return digierrors.E(op, digierrors.IsRetryable, zapcore.ErrorLevel, errors.New(errStr))
+	}
+	fmt.Printf("wrote case update records to grpc - records count: [%v]\n", len(events.Updates))
+	return nil
+}
+
+func createGrpcClient(ctx context.Context, dmwGrpcApiUrl string) digiservice.GrpcService {
+	digimiddlewareGrpcAddr := dmwGrpcApiUrl
+	conn, err := grpc.Dial(digimiddlewareGrpcAddr, grpc.WithInsecure())
+	if err != nil {
+		fmt.Printf("initialization of digimiddleware grpc client failed with err: [%v]\n", err)
+		return nil
+	} else {
+		fmt.Println("grpc client initialized")
 	}
 
 	middlewareEventService := digitransport.NewGRPCClient(conn, nil, nil)
 	return middlewareEventService
 }
-
-//func getCaseUpdateEvent(data models.DataView) {
-//	// TODO: Need to call API to get data for each contact to update so we can fill in values below
-//
-//	brandView := models.BrandView{
-//		BrandID:        1000, //DMW doesn't require the brand so we can hard-code any value here
-//		TenantID:       contact.TenantID,
-//		BusinessUnitID: 999, //TODO: How are we going to get this!!!
-//	}
-//
-//	channelView := models.ChannelView{
-//		ChannelD:                        contact.ChannelID,
-//		Name:                            "",    //TODO: Search for recipients array where idOnExternalPlatform = SUFFIX of channelId then take the name
-//		ChannelIntegrationBoxIdentifier: "",    //TODO: take the first part of the channelId OR recipientsCustomers.identities.externalPlatformId OR authorEndUserIdentity.identities.externalPlatformId OR endUser.identities.externalPlatformId
-//		ChannelIdOnExternalPlatform:     "",    //TODO: take the channelId suffix after chat_ OR for inbound, search recipients array where idOnExternalPlatform matches the suffix of channelID
-//		ChannelRealExternalPlatformID:   "",    //TODO: take the first part of the channelId OR recipientsCustomers.identities.externalPlatformId OR authorEndUserIdentity.identities.externalPlatformId OR endUser.identities.externalPlatformId
-//		ChannelIsPrivate:                false, //TODO: recipients.isPrivate (where the recipients.idOnExternalPlatform = the last part of the channelId
-//	}
-//
-//	caseEndUserRecipients := models.CaseEndUserRecipientsView{
-//		EndUserIdOnExternalPlatform: "",   //TODO: endUserRecipients.idOnExternalPlatform (if multiple, take one where isPrimary = true)
-//		EndUserName:                 "",   //TODO: endUserRecipients.name (if multiple, take one where isPrimary = true)
-//		EndUserIsPrimary:            true, //TODO: endUserRecipients.isPrimary
-//	}
-//
-//	caseView := models.CaseView{
-//		CaseID:                contact.ContactID,
-//		ThreadID:              data.ThreadId,
-//		InteractionID:         data.InteractionId,
-//		Status:                data.Status,
-//		RoutingQueueID:        data.RoutingQueueId,
-//		CaseInboxAssignee:     data.InboxAssignee,
-//		CaseOwnerAssignee:     data.OwnerAssignee,
-//		CaseEndUserRecipients: caseEndUserRecipients,
-//		DetailUrl:             data.DetailUrl,
-//		ContactGuid:           data.ContactGuid,
-//		CustomerContactID:     data.CustomerContactId,
-//		UserInfo:              models.CaseUserInfoView{},
-//	}
-//
-//	createdAt := models.CreatedAtUnix{
-//		Seconds: data.CreatedAt, //TODO: convert to Unix() seconds
-//		Nanos:   data.CreatedAt, //TODO: convert to UnixNano()
-//	}
-//
-//	caseUpdateEvent := models.CaseUpdateEvent{
-//		EventID:   uuid.NewString(),
-//		CreatedAt: createdAt,
-//		Type:      1,
-//		Brand:     brandView,
-//		Channel:   channelView,
-//		Case:      caseView,
-//	}
-//}
-
-//var tenantArr [...]string
-//tenantArr[0] = "11EB505F-7844-7680-923B-0242AC110003" //15572	perm_DFI_OSH_DO74
-//tenantArr[1] = "11EB664D-C2B5-EE70-8733-0242AC110002" //15576	perm_DFI-BillingcycleStart8
-//tenantArr[2] = "11EB664E-03B7-9FE0-8733-0242AC110002" //15577	perm_DFI_BillingCycleStart23

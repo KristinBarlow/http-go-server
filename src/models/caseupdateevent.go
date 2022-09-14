@@ -5,12 +5,13 @@ type CaseUpdateEventWrapper struct {
 }
 
 type CaseUpdateEvent struct {
-	EventID   string        `json:"eventID"`
-	CreatedAt CreatedAtUnix `json:"createdAt"`
-	Type      int32         `json:"type"`
-	Brand     BrandView     `json:"brand"`
-	Channel   ChannelView   `json:"channel"`
-	Case      CaseView      `json:"case"`
+	EventID   string      `json:"eventID"`
+	CreatedAt string      `json:"createdAt"`
+	Type      int32       `json:"type"`
+	Brand     BrandView   `json:"brand"`
+	Channel   ChannelView `json:"channel"`
+	Case      CaseView    `json:"case"`
+	Data      []DataView  `json:"Data,omitempty"`
 }
 
 type CreatedAtUnix struct {
@@ -35,7 +36,7 @@ type ChannelView struct {
 
 type CaseView struct {
 	CaseID                int64                       `json:"ID"`
-	ThreadID              string                      `json:"postID"`
+	PostID                string                      `json:"postID"`
 	InteractionID         string                      `json:"interactionID"`
 	Status                string                      `json:"status"`
 	RoutingQueueID        string                      `json:"routingQueueID"`
@@ -55,10 +56,10 @@ type CaseEndUserRecipientsView struct {
 }
 
 type CaseUserInfoView struct {
-	CaseAuthorEndUserIdentity AuthorEndUserIdentityView `json:"AuthorEndUserIdentity"`
+	CaseAuthorEndUserIdentity CaseAuthorEndUserIdentityView `json:"AuthorEndUserIdentity"`
 }
 
-type AuthorEndUserIdentityView struct {
+type CaseAuthorEndUserIdentityView struct {
 	AuthorEndUserID                   string `json:"ID"`
 	AuthorEndUserIdOnExternalPlatform string `json:"idOnExternalPlatform"`
 	AuthorEndUserFullName             string `json:"fullName"`
