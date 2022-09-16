@@ -22,7 +22,7 @@ type CreatedAtUnix struct {
 type BrandView struct {
 	BrandID        int32  `json:"ID"`
 	TenantID       string `json:"tenantID"`
-	BusinessUnitID int64  `json:"businessUnitID"`
+	BusinessUnitID int32  `json:"businessUnitID"`
 }
 
 type ChannelView struct {

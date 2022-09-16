@@ -38,7 +38,8 @@ type DataView struct {
 	Statistics                  DataStatisticsView            `json:"statistics,omitempty"`
 	EndUser                     DataEndUserView               `json:"endUser,omitempty"`
 	TenantID                    string
-	Error                       error
+	Err                         error
+	UpdateObj                   string
 }
 
 type DataInboxAssigneeUserView struct {

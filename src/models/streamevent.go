@@ -430,6 +430,7 @@ type StreamEventRequest struct {
 	CreatedAt                 *CustomTimestamp `json:"createdAt"`
 	CreatedAtWithMilliseconds *CustomTimestamp `json:"createdAtWithMilliseconds"`
 	Data                      Data             `json:"data"`
+	Err                       error
 }
 
 type SubQueue struct {
