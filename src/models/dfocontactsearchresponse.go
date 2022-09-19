@@ -39,7 +39,6 @@ type DataView struct {
 	EndUser                     DataEndUserView               `json:"endUser,omitempty"`
 	TenantID                    string
 	Err                         error
-	UpdateObj                   string
 }
 
 type DataInboxAssigneeUserView struct {

@@ -9,11 +9,8 @@ import (
 	"github.com/MyGoProjects/http-go-server/src/models"
 	"github.com/google/uuid"
 	pbm "github.com/inContact/orch-common/proto/digi/digimiddleware"
-	"github.com/inContact/orch-digital-middleware/pkg/digierrors"
 	"github.com/inContact/orch-digital-middleware/pkg/digiservice"
 	"github.com/inContact/orch-digital-middleware/pkg/digitransport"
-	"github.com/pkg/errors"
-	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"io/ioutil"
@@ -51,23 +48,20 @@ const (
 	dmwGrpcPort      = "9884"
 
 	// "Prompt for input" string variables in order they are prompted
-	regionRequest       = "region - \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
-	envRequest          = "environment - \"dev\", \"test\", \"staging\", \"prod\""
+	regionRequest       = "region - i.e. \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
+	envRequest          = "environment - i.e. \"dev\", \"test\", \"staging\", \"prod\""
+	clusterRequest      = "cluster - i.e. \"DO74\", \"SO32\", \"C32\""
 	tenantGuidRequest   = "tenantID (in GUID format)"
 	busNoRequest        = "business unit number"
 	clientIdRequest     = "dfo clientId"
 	clientSecretRequest = "dfo clientSecret"
-	dateFromRequest     = "input \"FromDate\" using format \"YYYY-mm-dd\" (OPTIONAL: Return for no date filter)"
+	dateFromRequest     = "\"FromDate\" using format \"YYYY-mm-dd\" (OPTIONAL: Return for no date filter)"
 	dateToRequest       = "\"ToDate\" in format \"YYYY-mm-dd\""
 	sortTypeRequest     = "sort order - \"asc\" for ascending order or \"desc\" for descending order"
 
 	// Log string for http responses other than 200
 	httpBadResponse = "returned response other than 200 success - response.StatusCode: [%d], response.Status: [%s]\n"
 )
-
-type TenantIdsObj struct {
-	TenantIDs [1]string `json:"tenantIds"`
-}
 
 type DfoApiUrlObj struct {
 	DateFrom    string // 2022-05-01
@@ -79,53 +73,91 @@ type DfoApiUrlObj struct {
 	Url         string
 }
 
+// Input variables in order they are requested
+type InputDataObj struct {
+	BusNo        string
+	ClientId     string
+	ClientSecret string
+	Cluster      string
+	DateFrom     string
+	DateTo       string
+	Env          string
+	Region       string
+	SortType     string
+	TenantId     string
+}
+
+type TenantIdsObj struct {
+	TenantIDs [1]string `json:"tenantIds"`
+}
+
 func main() {
-	var dfoData []models.DataView
-	var dfoDataErr models.DataView
-	var dmwKnownContacts models.DmwKnownContacts
-	// Input variables in order they are requested
-	region, env, tenantId, busNo, clientId, clientSecret, dateFrom, dateTo, sortType := "", "", "", "", "", "", "", "", ""
+	var dfoDataList []models.DataView
+	var dfoData models.DataView
+	var dmwKnownContact models.DmwKnownContacts
+	var inputData InputDataObj
+	var log []byte
+	var logMsg string
 	st := time.Now()
 	var tenants [1]string
 	var wg sync.WaitGroup
 
 	//Prompt for needed input data
-	region = promptForInputData("region", regionRequest)
-	env = promptForInputData("env", envRequest)
-	tenantId = promptForInputData("tenantId", tenantGuidRequest)
-	busNo = promptForInputData("busNo", busNoRequest)
-	clientId = promptForInputData("clientCreds", clientIdRequest)
-	clientSecret = promptForInputData("clientCreds", clientSecretRequest)
-	dateFrom = promptForInputData("dateFrom", dateFromRequest)
-	if dateFrom != "" {
-		dateTo = promptForInputData("dateTo", dateToRequest)
-		sortType = promptForInputData("sortType", sortTypeRequest)
+	inputData.Region = promptForInputData("region", regionRequest)
+	inputData.Env = promptForInputData("env", envRequest)
+	inputData.Cluster = promptForInputData("cluster", clusterRequest)
+	inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
+	inputData.BusNo = promptForInputData("busNo", busNoRequest)
+	inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
+	inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
+	inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
+	if inputData.DateFrom != "" {
+		inputData.DateTo = promptForInputData("dateTo", dateToRequest)
+		inputData.SortType = promptForInputData("sortType", sortTypeRequest)
 	}
 
 	// This section used for debugging.  Comment out prompts above and uncomment below to fill in data.
-	//region = "na1"
-	//env = "dev"
-	//tenantId = "11EA8B00-FE26-D4C0-8B66-0242AC110005"
-	//busNo = "4534531"
-	//clientId = "hZtufP76V4QKcWogRiaFHVQx1XGspDPFamH78P8n1xQqt"
-	//clientSecret = "SdrPoz7hj0GoEvxwDZweiK21jRBRUNFEfIhlrEKaSBK2t"
-	//dateFrom = "2020-08-21" // This BU has bad data prior to 8/21/2020 - api will return 500 internal server error
-	//dateTo = ""
-	//sortType = "asc"
+	//inputData.Region = "na1"
+	//inputData.Env = "dev"
+	//inputData.Cluster = "DO98"
+	//inputData.TenantId = "11EA8B00-FE26-D4C0-8B66-0242AC110005"
+	//inputData.BusNo = "4534531"
+	//inputData.ClientId = "hZtufP76V4QKcWogRiaFHVQx1XGspDPFamH78P8n1xQqt"
+	//inputData.ClientSecret = "SdrPoz7hj0GoEvxwDZweiK21jRBRUNFEfIhlrEKaSBK2t"
+	//inputData.DateFrom = "2020-08-21" // This BU has bad data prior to 8/21/2020 - api will return 500 internal server error
+	//inputData.DateTo = "2022-09-19"
+	//inputData.SortType = "asc"
 
-	//region = "na1"
-	//env = "dev"
-	//tenantId = "11eb5204-ec4d-a370-a1ba-0242ac110002"
-	//busNo = "15573"
-	//clientId = "i7ZnwBxZ5d5iSgb9EumUYx6I07ZsShyt2lQGKyVLPbMAF"
-	//clientSecret = "00eUgcwMlv3IXd2MacYXsgtyXg4PXx8VdGo3NeRbMrlm3"
+	// Automation BU DO74
+	//inputData.Region = "na1"
+	//inputData.Env = "dev"
+	//inputData.Cluster = "DO74"
+	//inputData.TenantId = "11eb5204-ec4d-a370-a1ba-0242ac110002"
+	//inputData.BusNo = "15573"
+	//inputData.ClientId = "i7ZnwBxZ5d5iSgb9EumUYx6I07ZsShyt2lQGKyVLPbMAF"
+	//inputData.ClientSecret = "00eUgcwMlv3IXd2MacYXsgtyXg4PXx8VdGo3NeRbMrlm3"
+	//inputData.DateFrom = "2022-08-01"
+	//inputData.DateTo = "2022-09-19"
+	//inputData.SortType = "asc"
+
+	// Whoop inc C46
+	//inputData.Region = "na1"
+	//inputData.Env = "prod"
+	//inputData.Cluster = "c46"
+	//inputData.TenantId = "11EBB1B9-B4CE-30D0-87C1-0242AC110003"
+	//inputData.BusNo = "4601917"
+	//inputData.ClientId = "ui3GUEtWPXr6E3WhyKDmknIWwlq3XCBJsKIAho4rXu5eO"
+	//inputData.ClientSecret = "spElVWAzX6HTIC8RJtdhNpGW50rsj71I95ba7mzjMMq0Y"
+	//inputData.DateFrom = ""
+	//inputData.DateTo = ""
+	//inputData.SortType = ""
 
 	// Build api and gRPC URIs
-	dmwContactStateApiUrl := buildUri("dmwGetStates", region, env)
-	dfoAuthTokenApiUrl := buildUri("dfoAuthToken", region, env)
-	dfoContactSearchApiUrl := buildUri("dfoContactSearch", region, env)
-	dfoContactByIdApiUrl := buildUri("dfoContactById", region, env)
-	dmwGrpcApiUrl := buildUri("dmwGrpc", region, env)
+	dmwContactStateApiUrl := buildUri("dmwGetStates", inputData)
+	dfoAuthTokenApiUrl := buildUri("dfoAuthToken", inputData)
+	dfoContactSearchApiUrl := buildUri("dfoContactSearch", inputData)
+	dfoContactByIdApiUrl := buildUri("dfoContactById", inputData)
+	dmwGrpcApiUrl := buildUri("dmwGrpc", inputData)
 
 	// Get DFO auth token
 	var dfoAuthTokenObj models.DfoAuthTokenObj
@@ -135,14 +167,24 @@ func main() {
 		var err error
 		method := "getDfoAuthToken"
 		t := time.Now()
-		fmt.Println("begin api call: getDfoAuthToken")
-		dfoAuthTokenObj, err = getDfoAuthToken(dfoAuthTokenApiUrl, clientId, clientSecret)
+
+		logMsg = fmt.Sprintf("begin api call: getDfoAuthToken")
+		fmt.Println(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		dfoAuthTokenObj, err = getDfoAuthToken(dfoAuthTokenApiUrl, inputData)
 		if err != nil {
 			dfoAuthTokenObj.Error = err
-			fmt.Printf("error calling [%s]: [%v]\n", method, err)
+
+			logMsg = fmt.Sprintf("error calling [%s]: [%v]\n", method, err)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
 			return
 		}
-		fmt.Printf("[%s] - done, duration=%s\n", method, time.Since(t))
+		logMsg = fmt.Sprintf("[%s] - done, duration=%s\n", method, time.Since(t))
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
 	}()
 	wg.Wait()
 
@@ -154,15 +196,24 @@ func main() {
 			var err error
 			method := "getDmwActiveContactStateData"
 			t := time.Now()
-			tenants[0] = tenantId
-			fmt.Printf("begin api call: [%s]\n", method)
-			dmwKnownContacts, err = getDmwActiveContactStateData(dmwContactStateApiUrl, tenants)
+			tenants[0] = inputData.TenantId
+
+			logMsg = fmt.Sprintf("begin api call: [%s]\n", method)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			dmwKnownContact, err = getDmwActiveContactStateData(dmwContactStateApiUrl, tenants)
 			if err != nil {
-				dmwKnownContacts.Error = err
-				fmt.Printf("error calling [%s]: [%v]\n", method, err)
+				dmwKnownContact.Error = err
+
+				logMsg = fmt.Sprintf("error calling [%s]: [%v]\n", method, err)
+				fmt.Printf(logMsg)
+				log = append(log, []byte(logMsg)...)
 				return
 			}
-			fmt.Printf("[%s] - done, duration=%s, contacts=%d\n", method, time.Since(t), len(dmwKnownContacts.Contacts))
+			logMsg = fmt.Sprintf("[%s] - done, duration=%s, returned [%d] total contacts\n", method, time.Since(t), len(dmwKnownContact.Contacts))
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		}()
 		wg.Wait()
 
@@ -173,14 +224,24 @@ func main() {
 			defer wg.Done()
 			method := "makeDfoContactSearchApiCall"
 			t := time.Now()
-			fmt.Printf("begin api call: [%s]\n", method)
-			dfoData, err = makeDfoContactSearchApiCall(dfoContactSearchApiUrl, dateFrom, dateTo, sortType, dfoAuthTokenObj)
+
+			logMsg = fmt.Sprintf("begin api call: [%s]\n", method)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			dfoDataList, err = makeDfoContactSearchApiCall(dfoContactSearchApiUrl, inputData, dfoAuthTokenObj)
 			if err != nil {
-				dfoDataErr.Err = err
-				fmt.Printf("error calling [%s]]: [%v]\n", method, err)
+				dfoData.Err = err
+
+				logMsg = fmt.Sprintf("error calling [%s]]: [%v]\n", method, err)
+				fmt.Printf(logMsg)
+				log = append(log, []byte(logMsg)...)
+
 				return
 			}
-			fmt.Printf("[%s] - done, duration=%s, dfoActiveContacts=%d\n", method, time.Since(t), len(dfoData))
+			logMsg = fmt.Sprintf("[%s] - done, duration=%s, dfoActiveContacts=%d\n", method, time.Since(t), len(dfoDataList))
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		}()
 		wg.Wait()
 	}
@@ -189,39 +250,64 @@ func main() {
 	var deltaContacts models.DmwKnownContacts
 	method := "buildDeltaList"
 
-	if dmwKnownContacts.Error == nil && dfoDataErr.Err == nil {
-		if len(dmwKnownContacts.Contacts) > 0 {
-			fmt.Printf("begin building list: [%s]\n", method)
+	if dmwKnownContact.Error == nil && dfoData.Err == nil {
+		if len(dmwKnownContact.Contacts) > 0 {
+			logMsg = fmt.Sprintf("begin building list: [%s]\n", method)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
 			t := time.Now()
-			deltaContacts = buildDeltaList(dmwKnownContacts, dfoData)
-			fmt.Printf("[%s] - done, duration=%s, deltaContacts=%d\n", method, time.Since(t), len(deltaContacts.Contacts))
+			deltaContacts = buildDeltaList(inputData, dmwKnownContact, dfoDataList)
+
+			logMsg = fmt.Sprintf("[%s] - done, duration=%s, deltaContacts=%d\n", method, time.Since(t), len(deltaContacts.Contacts))
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
 		} else {
-			fmt.Println("dmw list was empty due to no contacts or error retrieving data from api - will not attempt to process updates")
+			logMsg = fmt.Sprintf("dmw list was empty due to no contacts or error retrieving data from api - will not attempt to process updates")
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
 			return
 		}
 	} else {
-		fmt.Println("[makeDfoContactSearchApiCall] error retrieving data from api - will not attempt to process updates")
+		logMsg = fmt.Sprintf("error retrieving data from api - will not attempt to process updates")
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
+
 		return
 	}
 
 	// Batch and Process records to digimiddleware using gRPC
 	if len(deltaContacts.Contacts) > 0 {
-		process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, tenantId, busNo)
+		process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, inputData)
 	} else {
-		fmt.Println("comparison of lists returned 0 contacts to update - will not attempt to process updates")
+		logMsg = fmt.Sprintf("comparison of lists returned 0 contacts to update - will not attempt to process updates")
+		fmt.Println(logMsg)
+		log = append(log, []byte(logMsg)...)
+
 		return
 	}
 
-	fmt.Printf("update case state service completed - totalDuration = %s\n", time.Since(st))
+	logMsg = fmt.Sprintf("update case state service completed - totalDuration = %s\n", time.Since(st))
+	fmt.Println(logMsg)
+	log = append(log, []byte(logMsg)...)
+
+	// Create output log file
+	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\Logs\\LOG_%s_%s_%d.csv", inputData.Cluster, inputData.BusNo, time.Now().UnixNano())
+
+	err := os.WriteFile(filepath, log, 0644)
+	check(err)
 }
 
 // process batches the data into specified batchSize to process
-func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, tenantId, busNo string) {
-	var batchCount int
+func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl string, inputData InputDataObj) {
+	batchCount := 1
 	var errList []models.DataView
+	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
+
 	for start, end := 0, 0; start <= len(data)-1; start = end {
 		var err error
-		var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
 
 		end = start + batchSize
 		if end > len(data) {
@@ -232,10 +318,10 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 		method := "processBatch"
 		t := time.Now()
 		fmt.Printf("begin processing batch [%d]\n", batchCount)
-		sanitizedUpdateRecords, errList = processBatch(batch, dfoContactByIdApiUrl, dfoAuthTokenObj, tenantId, busNo)
+		sanitizedUpdateRecords, errList = processBatch(batch, dfoContactByIdApiUrl, dfoAuthTokenObj, inputData)
 		fmt.Printf("[%s] [%d] - done, duration=%s, total records to update=%d\n", method, batchCount, time.Since(t), len(sanitizedUpdateRecords))
 		if errList != nil {
-			fmt.Println("ERROR processing batch - will not attempt to update below contacts")
+			fmt.Printf("ERROR processing batch - will not attempt to update below [%d] contacts\n", len(errList))
 			// Range over errList to print all errors together for more readable logs
 			for _, e := range errList {
 				fmt.Println(e.Err)
@@ -246,7 +332,7 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 		// Push sanitizedUpdateRecords to digimiddleware via gRPC
 		if sanitizedUpdateRecords != nil {
 			method2 := "sendUpdateRecordsToMiddleware"
-			fmt.Printf("grpc call start: [%s]\n]", method2)
+			fmt.Printf("begin pushing updates to digimiddleware: [%s]\n", method2)
 			t := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 			err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
@@ -265,27 +351,43 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 			fmt.Printf("[%s] there were no contacts added to sanitizedUpdateRecords list - will not attempt to process updates\n", method)
 		}
 	}
+
+	// Create output file and print updated contacts to console
+	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\%s_%s_%d.csv", inputData.Cluster, inputData.BusNo, time.Now().UnixNano())
+
+	mr, _ := json.Marshal(sanitizedUpdateRecords)
+	err := os.WriteFile(filepath, mr, 0644)
+	check(err)
+
+	for _, record := range sanitizedUpdateRecords {
+		fmt.Println(record)
+	}
+}
+
+func check(e error) {
+	if e != nil {
+		panic(e)
+	}
 }
 
 // processBatch calls DFO 3.0 GET Contact to obtain contact data to build the case update event
-func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, tenantId, busNo string) ([]*pbm.CaseUpdateEvent, []models.DataView) {
-	var contactData models.DataView
-	var contactDataObjList []models.DataView
+func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, i InputDataObj) ([]*pbm.CaseUpdateEvent, []models.DataView) {
 	var errList []models.DataView
-	var mtx sync.Mutex
 	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
 	var wg sync.WaitGroup
 
 	for _, contact := range list {
 		wg.Add(1)
-		go func(contact models.DmwKnownContact) {
+		go func(contact models.DmwKnownContact, errList []models.DataView) {
 			defer wg.Done()
+			var contactData models.DataView
+			var mtx sync.Mutex
 			// Call DFO 3.0 GET Contacts by contactId for each record in Delta list to obtain actual metadata for contact
 			contactData = makeDfoContactByIdApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, contact)
 
 			if contactData.Err == nil {
 				// Create the Update Event object from the contactData received from DFO
-				event := createEvent(contactData, tenantId, busNo)
+				event := createEvent(contactData, i.TenantId, i.BusNo)
 
 				// Using the Event Object, create the CaseUpdateEvent object
 				updateMessage, err := makeCaseUpdate(event)
@@ -293,10 +395,6 @@ func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, df
 					contactData.Err = err
 					errList = append(errList, contactData)
 					return
-				} else {
-					updateObjSt := fmt.Sprintf("update event object created: brand: %+v, case: %+v, channel: %+v, createdAt: %+v, eventId: %vn", updateMessage.Brand, updateMessage.Case, updateMessage.Channel, updateMessage.CreatedAt, updateMessage.EventID)
-					contactData.UpdateObj = updateObjSt
-					contactDataObjList = append(contactDataObjList, contactData)
 				}
 
 				if updateMessage != nil && contactData.Err == nil {
@@ -307,62 +405,55 @@ func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, df
 			} else {
 				errList = append(errList, contactData)
 			}
-		}(contact)
+		}(contact, errList)
 	}
 	wg.Wait()
-
-	// Range over list to print contact objects together for more readable logs
-	for _, s := range contactDataObjList {
-		if s.UpdateObj != "" {
-			fmt.Println(s.UpdateObj)
-		}
-	}
 
 	return sanitizedUpdateRecords, errList
 }
 
-func buildUri(apiType string, region string, env string) string {
-	fmt.Printf("%s uri for requested region [%s] and env [%s] -- ", apiType, region, env)
+func buildUri(apiType string, i InputDataObj) string {
+	fmt.Printf("%s uri for requested region [%s] and env [%s] -- ", apiType, i.Region, i.Env)
 	uri := ""
 	switch apiType {
 	case "dmwGetStates":
-		uri = dmwApiUrlPrefix + region + ".omnichannel." + env + ".internal:" + dmwApiPort + dmwApiPath + dmwGetStatesEndpoint
+		uri = dmwApiUrlPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + dmwApiPort + dmwApiPath + dmwGetStatesEndpoint
 		fmt.Println(uri)
 	case "dfoAuthToken":
-		switch env {
+		switch i.Env {
 		case "prod":
-			uri = dfoApiUrlPrefix + region + dfoApiV2Path + dfoAuthTokenEndpoint
+			uri = dfoApiUrlPrefix + i.Region + dfoApiV2Path + dfoAuthTokenEndpoint
 			fmt.Println(uri)
 		case "dev", "test", "staging":
-			uri = dfoApiUrlPrefix + region + "." + env + dfoApiV2Path + dfoAuthTokenEndpoint
+			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV2Path + dfoAuthTokenEndpoint
 			fmt.Println(uri)
 		default:
 			break
 		}
 	case "dfoContactSearch":
-		switch env {
+		switch i.Env {
 		case "prod":
-			uri = dfoApiUrlPrefix + region + dfoApiV3Path + dfoContactSearchEndpoint
+			uri = dfoApiUrlPrefix + i.Region + dfoApiV3Path + dfoContactSearchEndpoint
 			fmt.Println(uri)
 		case "dev", "test", "staging":
-			uri = dfoApiUrlPrefix + region + "." + env + dfoApiV3Path + dfoContactSearchEndpoint
+			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV3Path + dfoContactSearchEndpoint
 			fmt.Println(uri)
 		default:
 			break
 		}
 	case "dfoContactById":
-		switch env {
+		switch i.Env {
 		case "prod":
-			uri = dfoApiUrlPrefix + region + dfoApiV3Path + dfoContactByIdEndpoint
+			uri = dfoApiUrlPrefix + i.Region + dfoApiV3Path + dfoContactByIdEndpoint
 			fmt.Println(uri)
 		case "dev", "test", "staging":
-			uri = dfoApiUrlPrefix + region + "." + env + dfoApiV3Path + dfoContactByIdEndpoint
+			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV3Path + dfoContactByIdEndpoint
 			fmt.Println(uri)
 		default:
 			break
 		}
 	case "dmwGrpc":
-		uri = dmwGrpcUriPrefix + region + ".omnichannel." + env + ".internal:" + dmwGrpcPort
+		uri = dmwGrpcUriPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + dmwGrpcPort
 		fmt.Println(uri)
 	default:
 		break
@@ -372,20 +463,20 @@ func buildUri(apiType string, region string, env string) string {
 
 // promptForInputData sends request for input data and validates the values, then returns the response
 func promptForInputData(inputType string, requestType string) string {
-	response := GetInputData(requestType)
+	response := getInputData(requestType)
 
 	validInputData := false
 	for !validInputData {
-		validInputData = ValidateResponse(response, inputType, validInputData)
+		validInputData = validateResponse(response, inputType, validInputData)
 		if !validInputData {
-			response = GetInputData(requestType)
+			response = getInputData(requestType)
 		}
 	}
 	return response
 }
 
-// GetInputData requests user input and returns value
-func GetInputData(inputType string) string {
+// getInputData requests user input and returns value
+func getInputData(inputType string) string {
 	fmt.Printf("input %v: ", inputType)
 	reader := bufio.NewReader(os.Stdin)
 
@@ -397,8 +488,8 @@ func GetInputData(inputType string) string {
 	return strings.TrimSuffix(response, "\n")
 }
 
-// ValidateResponse verifies that the data input by the user was in a proper type or format
-func ValidateResponse(inputValue string, inputType string, inputValueValid bool) bool {
+// validateResponse verifies that the data input by the user was in a proper type or format
+func validateResponse(inputValue string, inputType string, inputValueValid bool) bool {
 	switch inputType {
 	case "region":
 		switch strings.ToLower(inputValue) {
@@ -413,6 +504,12 @@ func ValidateResponse(inputValue string, inputType string, inputValueValid bool)
 			inputValueValid = true
 		default:
 			fmt.Println("INPUT VALUE IS NOT A VALID ENVIRONMENT NAME: (\"dev\", \"test\", \"staging\", \"prod\")")
+		}
+	case "cluster":
+		if len(inputValue) > 2 || len(inputValue) < 5 {
+			inputValueValid = true
+		} else {
+			fmt.Println("INPUT VALUE IS NOT THE PROPER STRING LENGTH")
 		}
 	case "tenantId":
 		if _, err := uuid.Parse(inputValue); err != nil {
@@ -458,7 +555,7 @@ func ValidateResponse(inputValue string, inputType string, inputValueValid bool)
 
 // getDmwActiveContactStateData calls the Digimiddleware api POST digimiddleware/getstatesbytenants to get the list of contacts stored in DynamoDB
 func getDmwActiveContactStateData(apiUrl string, tenants [1]string) (models.DmwKnownContacts, error) {
-	var dmwKnownContacts models.DmwKnownContacts
+	var dmwKnownContact models.DmwKnownContacts
 	contentType := "application/json"
 	method := "getDmwActiveContactStateData"
 	var tenantIdsObj TenantIdsObj
@@ -473,41 +570,41 @@ func getDmwActiveContactStateData(apiUrl string, tenants [1]string) (models.DmwK
 	if err != nil {
 		fmt.Print(err.Error())
 		os.Exit(1)
-		return dmwKnownContacts, err
+		return dmwKnownContact, err
 	}
 
 	if response.StatusCode == 200 {
 		responseData, err = ioutil.ReadAll(response.Body)
 		if err != nil {
 			fmt.Print(err.Error())
-			return dmwKnownContacts, err
+			return dmwKnownContact, err
 		}
 	} else {
 		fmt.Printf(method+httpBadResponse, response.StatusCode, response.Status)
 	}
 
 	if responseData != nil {
-		err = json.Unmarshal(responseData, &dmwKnownContacts)
+		err = json.Unmarshal(responseData, &dmwKnownContact)
 		if err != nil {
 			fmt.Printf("[%s] cannot unmarshal dmw response: [%v]\n", method, err)
-			return dmwKnownContacts, err
+			return dmwKnownContact, err
 		}
 	}
 
-	sort.SliceStable(dmwKnownContacts.Contacts, func(i, j int) bool {
-		return dmwKnownContacts.Contacts[i].ContactID < dmwKnownContacts.Contacts[j].ContactID
+	sort.SliceStable(dmwKnownContact.Contacts, func(i, j int) bool {
+		return dmwKnownContact.Contacts[i].ContactID < dmwKnownContact.Contacts[j].ContactID
 	})
 
-	return dmwKnownContacts, err
+	return dmwKnownContact, err
 }
 
 // getDfoAuthToken calls the DFO api POST engager/2.0/token to get a bearer token for subsequent DFO api calls
-func getDfoAuthToken(apiUrl string, clientId string, clientSecret string) (models.DfoAuthTokenObj, error) {
+func getDfoAuthToken(apiUrl string, i InputDataObj) (models.DfoAuthTokenObj, error) {
 	contentType := "application/json"
 	var dfoAuthTokenBody models.DfoAuthTokenBody
 	dfoAuthTokenBody.GrantType = "client_credentials"
-	dfoAuthTokenBody.ClientId = clientId
-	dfoAuthTokenBody.ClientSecret = clientSecret
+	dfoAuthTokenBody.ClientId = i.ClientId
+	dfoAuthTokenBody.ClientSecret = i.ClientSecret
 	var dfoAuthTokenObj models.DfoAuthTokenObj
 	method := "getDfoAuthToken"
 
@@ -550,7 +647,7 @@ func getDfoAuthToken(apiUrl string, clientId string, clientSecret string) (model
 }
 
 // makeDfoContactSearchApiCall calls the DFO 3.0 GET Contact Search Api then loops until all data is retrieved (api only returns 25 records at a time)
-func makeDfoContactSearchApiCall(dfoContactSearchApiUrl, dateFrom, dateTo, sortType string, dfoAuthTokenObj models.DfoAuthTokenObj) ([]models.DataView, error) {
+func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, dfoAuthTokenObj models.DfoAuthTokenObj) ([]models.DataView, error) {
 	var apiUrl DfoApiUrlObj
 	var dfoActiveContactList models.DfoContactSearchResponse
 	var dfoData []models.DataView
@@ -559,16 +656,16 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl, dateFrom, dateTo, sortT
 	var mtx sync.Mutex
 
 	// Add URL parameters
-	apiUrl.DateFrom = "&date[from]=" + dateFrom + "&"
-	apiUrl.DateTo = "&date[to]=" + dateTo + "&"
+	apiUrl.DateFrom = "&date[from]=" + i.DateFrom + "&"
+	apiUrl.DateTo = "&date[to]=" + i.DateTo + "&"
 	apiUrl.ScrollToken = "&scrollToken="
 	apiUrl.Sorting = "&sorting=createdAt"
 	apiUrl.SortingType = "&sortingType=asc"
-	if sortType == "" {
+	if i.SortType == "" {
 		apiUrl.Url = dfoContactSearchApiUrl
-	} else if dateFrom == "" {
+	} else if i.DateFrom == "" {
 		apiUrl.Url = dfoContactSearchApiUrl
-	} else if dateTo == "" {
+	} else if i.DateTo == "" {
 		apiUrl.Url = dfoContactSearchApiUrl + apiUrl.DateFrom + apiUrl.Sorting + apiUrl.SortingType
 	} else {
 		apiUrl.Url = dfoContactSearchApiUrl + apiUrl.DateFrom + apiUrl.DateTo + apiUrl.Sorting + apiUrl.SortingType
@@ -636,7 +733,7 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl, dateFrom, dateTo, sortT
 }
 
 // buildDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
-func buildDeltaList(dmwKnownContacts models.DmwKnownContacts, dfoData []models.DataView) models.DmwKnownContacts {
+func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfoData []models.DataView) models.DmwKnownContacts {
 	type DmwContacts []models.DmwKnownContact
 	deltaArray := DmwContacts{}
 	var deltaList models.DmwKnownContacts
@@ -644,29 +741,43 @@ func buildDeltaList(dmwKnownContacts models.DmwKnownContacts, dfoData []models.D
 	notFoundCount := 0
 	alreadyClosedCount := 0
 
-	// Loop through DmwKnownContacts and check each contact data in DfoActiveContacts to see if we find a match
-	for _, contact := range dmwKnownContacts.Contacts {
+	// Loop through DmwKnownContact.Contacts and check each contact data in DfoActiveContacts to see if we find a match
+	for _, contact := range dmwKnownContact.Contacts {
 		found := false
 		shouldClose := false
+
 		// Only compare contact with DFO data if contact is not closed (18)
 		if contact.CurrentContactState != 18 {
 			// Compare the data from DFO with the DMW data
 			for _, d := range dfoData {
-				shouldClose = false
 				dataId, _ := strconv.ParseInt(d.Id, 10, 64)
+				shouldClose = false
+				matchesDateFilter := true
+
+				// If date filter was added, only check dmw known contacts between those dates
+				if i.DateFrom != "" && i.DateTo != "" {
+					if contact.CurrentContactDate <= i.DateFrom || contact.CurrentContactDate >= i.DateTo {
+						matchesDateFilter = false
+					}
+				}
+
+				if !matchesDateFilter {
+					break
+				}
+
 				if contact.ContactID == dataId {
 					found = true
 					foundCount++
-					fmt.Printf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*DfoContactState*[%s]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, d.Status, contact.CurrentContactDate)
+					//fmt.Printf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*DfoContactState*[%s]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, d.Status, contact.CurrentContactDate)
 					break
 				} else {
 					shouldClose = true
 				}
 			}
 
-			if !found {
+			if !found && shouldClose {
 				notFoundCount++
-				fmt.Printf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*DfoContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, 18, contact.CurrentContactDate)
+				fmt.Printf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, contact.CurrentContactDate)
 			}
 		} else {
 			alreadyClosedCount++
@@ -703,10 +814,10 @@ func buildDeltaList(dmwKnownContacts models.DmwKnownContacts, dfoData []models.D
 		}
 	}
 
-	fmt.Printf("total dmwKnownContacts: %d\n", len(dmwKnownContacts.Contacts))
-	fmt.Printf("total contacts that were already closed (will not be updated): %d\n", alreadyClosedCount)
-	fmt.Printf("total contacts that were not found (will be updated): %d\n", notFoundCount)
-	fmt.Printf("total contacts that were found (will not be updated): %d\n", foundCount)
+	fmt.Printf("total dmw known contacts: %d\n", len(dmwKnownContact.Contacts))
+	fmt.Printf("total contacts that were already closed (will not attempt to update): %d\n", alreadyClosedCount)
+	fmt.Printf("total contacts that were not found (will attempt to update): %d\n", notFoundCount)
+	fmt.Printf("total contacts that were found (will not attempt to update): %d\n", foundCount)
 	return deltaList
 }
 
@@ -804,7 +915,7 @@ func createEvent(contactData models.DataView, tenantID, busNo string) models.Str
 	event.Data.Case.Status = contactData.Status
 	event.Data.Case.OwnerAssignee = contactData.OwnerAssignee
 	event.Data.Channel.ID = contactData.ChannelId
-	event.Data.Channel.Name = "channelName" // we don't use this so hardCode anything
+	event.Data.Channel.Name = ""
 	event.Data.Channel.IntegrationBoxIdentifier = channelParts[0]
 	event.Data.Channel.IDOnExternalPlatform = channelParts[1]
 	event.Data.Channel.IsPrivate = true
@@ -917,36 +1028,36 @@ func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEv
 		fmt.Printf("[%s] total count of case event updates to be sent to digimiddleware [%v]\n", method, len(events.Updates))
 	}
 
-	op := digierrors.Op("sendUpdateRecordsToMiddleware")
+	//op := digierrors.Op("sendUpdateRecordsToMiddleware")
 
 	// Create gRPC client to pass CaseEventUpdate to digimiddleware
 	method2 := "createGrpcClient"
 	t := time.Now()
 	fmt.Printf("begin create grpc client: [%s]\n", method2)
-	middlewareEventService := createGrpcClient(dmwGrpcApiUrl)
+	//middlewareEventService := createGrpcClient(dmwGrpcApiUrl)
 	fmt.Printf("[%s] - done, duration=%s\n", method2, time.Since(t))
 
-	if middlewareEventService == nil {
-		return nil
-	}
+	//if middlewareEventService == nil {
+	//	return nil
+	//}
 
 	method3 := "CaseEventUpdate"
 	t = time.Now()
 	fmt.Printf("begin grpc call to update records in digimiddleware: [%s]\n", method3)
-	response, err := middlewareEventService.CaseEventUpdate(ctx, events)
+	//response, err := middlewareEventService.CaseEventUpdate(ctx, events)
 	fmt.Printf("[%s] - done, duration=%s\n", method3, time.Since(t))
 
-	if err != nil {
-		// Failure to deliver to Middleware (e.g., network errors, etc.)
-		return digierrors.E(op, digierrors.IsRetryable, zapcore.ErrorLevel, err)
-	}
+	//if err != nil {
+	//	// Failure to deliver to Middleware (e.g., network errors, etc.)
+	//	return digierrors.E(op, digierrors.IsRetryable, zapcore.ErrorLevel, err)
+	//}
 
 	// If we got an error response, then the Middleware indicates this is retryable. Return an error here.
-	errStr := response.GetErr()
-	if errStr != "" {
-		fmt.Printf("[%s] received error from case update grpc: [%v]\n", method3, errStr)
-		return digierrors.E(op, digierrors.IsRetryable, zapcore.ErrorLevel, errors.New(errStr))
-	}
+	//errStr := response.GetErr()
+	//if errStr != "" {
+	//	fmt.Printf("[%s] received error from case update grpc: [%v]\n", method3, errStr)
+	//	return digierrors.E(op, digierrors.IsRetryable, zapcore.ErrorLevel, errors.New(errStr))
+	//}
 	fmt.Printf("[%s] wrote case update records to grpc - records count: [%v]\n", method3, len(events.Updates))
 	return nil
 }
