@@ -47,16 +47,16 @@ const (
 	dmwGrpcPort      = "9884"
 
 	// "Prompt for input" string variables in order they are prompted
-	//regionRequest       = "region - i.e. \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
-	//envRequest          = "environment - i.e. \"dev\", \"test\", \"staging\", \"prod\""
-	//clusterRequest      = "cluster - i.e. \"DO74\", \"SO32\", \"C32\""
-	//tenantGuidRequest   = "tenantID (in GUID format)"
-	//busNoRequest        = "business unit number"
-	//clientIdRequest     = "dfo clientId"
-	//clientSecretRequest = "dfo clientSecret"
-	//dateFromRequest     = "\"FromDate\" using format \"YYYY-mm-dd\" (OPTIONAL: Return for no date filter)"
-	//dateToRequest       = "\"ToDate\" in format \"YYYY-mm-dd\""
-	//sortTypeRequest     = "sort order - \"asc\" for ascending order or \"desc\" for descending order"
+	regionRequest       = "region - i.e. \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
+	envRequest          = "environment - i.e. \"dev\", \"test\", \"staging\", \"prod\""
+	clusterRequest      = "cluster - i.e. \"DO74\", \"SO32\", \"C32\""
+	tenantGuidRequest   = "tenantID (in GUID format)"
+	busNoRequest        = "business unit number"
+	clientIdRequest     = "dfo clientId"
+	clientSecretRequest = "dfo clientSecret"
+	dateFromRequest     = "\"FromDate\" using format \"YYYY-mm-dd\" (OPTIONAL: Return for no date filter)"
+	dateToRequest       = "\"ToDate\" in format \"YYYY-mm-dd\""
+	sortTypeRequest     = "sort order - \"asc\" for ascending order or \"desc\" for descending order"
 
 	// Log string for http responses other than 200
 	httpBadResponse = " returned response other than 200 success - response.StatusCode: [%d], response.Status: [%s]\n"
@@ -102,54 +102,18 @@ func main() {
 	var wg sync.WaitGroup
 
 	//Prompt for needed input data
-	//inputData.Region = promptForInputData("region", regionRequest)
-	//inputData.Env = promptForInputData("env", envRequest)
-	//inputData.Cluster = promptForInputData("cluster", clusterRequest)
-	//inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
-	//inputData.BusNo = promptForInputData("busNo", busNoRequest)
-	//inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
-	//inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
-	//inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
-	//if inputData.DateFrom != "" {
-	//	inputData.DateTo = promptForInputData("dateTo", dateToRequest)
-	//	inputData.SortType = promptForInputData("sortType", sortTypeRequest)
-	//}
-
-	// This section used for debugging.  Comment out prompts above and uncomment below to fill in data.
-	//inputData.Region = "na1"
-	//inputData.Env = "dev"
-	//inputData.Cluster = "DO98"
-	//inputData.TenantId = "11EA8B00-FE26-D4C0-8B66-0242AC110005"
-	//inputData.BusNo = "4534531"
-	//inputData.ClientId = "hZtufP76V4QKcWogRiaFHVQx1XGspDPFamH78P8n1xQqt"
-	//inputData.ClientSecret = "SdrPoz7hj0GoEvxwDZweiK21jRBRUNFEfIhlrEKaSBK2t"
-	//inputData.DateFrom = "2020-08-21" // This BU has bad data prior to 8/21/2020 - api will return 500 internal server error
-	//inputData.DateTo = "2022-09-19"
-	//inputData.SortType = "asc"
-
-	// Automation BU DO74
-	//inputData.Region = "na1"
-	//inputData.Env = "dev"
-	//inputData.Cluster = "DO74"
-	//inputData.TenantId = "11eb5204-ec4d-a370-a1ba-0242ac110002"
-	//inputData.BusNo = "15573"
-	//inputData.ClientId = "i7ZnwBxZ5d5iSgb9EumUYx6I07ZsShyt2lQGKyVLPbMAF"
-	//inputData.ClientSecret = "00eUgcwMlv3IXd2MacYXsgtyXg4PXx8VdGo3NeRbMrlm3"
-	//inputData.DateFrom = "2022-08-01"
-	//inputData.DateTo = "2022-09-19"
-	//inputData.SortType = "asc"
-
-	// Whoop inc C46
-	inputData.Region = "na1"
-	inputData.Env = "prod"
-	inputData.Cluster = "c46"
-	inputData.TenantId = "11EBB1B9-B4CE-30D0-87C1-0242AC110003"
-	inputData.BusNo = "4601917"
-	inputData.ClientId = "ui3GUEtWPXr6E3WhyKDmknIWwlq3XCBJsKIAho4rXu5eO"
-	inputData.ClientSecret = "spElVWAzX6HTIC8RJtdhNpGW50rsj71I95ba7mzjMMq0Y"
-	inputData.DateFrom = ""
-	inputData.DateTo = ""
-	inputData.SortType = ""
+	inputData.Region = promptForInputData("region", regionRequest)
+	inputData.Env = promptForInputData("env", envRequest)
+	inputData.Cluster = promptForInputData("cluster", clusterRequest)
+	inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
+	inputData.BusNo = promptForInputData("busNo", busNoRequest)
+	inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
+	inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
+	inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
+	if inputData.DateFrom != "" {
+		inputData.DateTo = promptForInputData("dateTo", dateToRequest)
+		inputData.SortType = promptForInputData("sortType", sortTypeRequest)
+	}
 
 	// Build api and gRPC URIs
 	dmwContactStateApiUrl, logFile := buildUri("dmwGetStates", inputData, logFile)
