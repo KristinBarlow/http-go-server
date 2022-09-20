@@ -60,7 +60,7 @@ const (
 	sortTypeRequest     = "sort order - \"asc\" for ascending order or \"desc\" for descending order"
 
 	// Log string for http responses other than 200
-	httpBadResponse = "returned response other than 200 success - response.StatusCode: [%d], response.Status: [%s]\n"
+	httpBadResponse = " returned response other than 200 success - response.StatusCode: [%d], response.Status: [%s]\n"
 )
 
 type DfoApiUrlObj struct {
@@ -103,18 +103,18 @@ func main() {
 	var wg sync.WaitGroup
 
 	//Prompt for needed input data
-	inputData.Region = promptForInputData("region", regionRequest)
-	inputData.Env = promptForInputData("env", envRequest)
-	inputData.Cluster = promptForInputData("cluster", clusterRequest)
-	inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
-	inputData.BusNo = promptForInputData("busNo", busNoRequest)
-	inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
-	inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
-	inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
-	if inputData.DateFrom != "" {
-		inputData.DateTo = promptForInputData("dateTo", dateToRequest)
-		inputData.SortType = promptForInputData("sortType", sortTypeRequest)
-	}
+	//inputData.Region = promptForInputData("region", regionRequest)
+	//inputData.Env = promptForInputData("env", envRequest)
+	//inputData.Cluster = promptForInputData("cluster", clusterRequest)
+	//inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
+	//inputData.BusNo = promptForInputData("busNo", busNoRequest)
+	//inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
+	//inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
+	//inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
+	//if inputData.DateFrom != "" {
+	//	inputData.DateTo = promptForInputData("dateTo", dateToRequest)
+	//	inputData.SortType = promptForInputData("sortType", sortTypeRequest)
+	//}
 
 	// This section used for debugging.  Comment out prompts above and uncomment below to fill in data.
 	//inputData.Region = "na1"
@@ -141,23 +141,23 @@ func main() {
 	//inputData.SortType = "asc"
 
 	// Whoop inc C46
-	//inputData.Region = "na1"
-	//inputData.Env = "prod"
-	//inputData.Cluster = "c46"
-	//inputData.TenantId = "11EBB1B9-B4CE-30D0-87C1-0242AC110003"
-	//inputData.BusNo = "4601917"
-	//inputData.ClientId = "ui3GUEtWPXr6E3WhyKDmknIWwlq3XCBJsKIAho4rXu5eO"
-	//inputData.ClientSecret = "spElVWAzX6HTIC8RJtdhNpGW50rsj71I95ba7mzjMMq0Y"
-	//inputData.DateFrom = ""
-	//inputData.DateTo = ""
-	//inputData.SortType = ""
+	inputData.Region = "na1"
+	inputData.Env = "prod"
+	inputData.Cluster = "c46"
+	inputData.TenantId = "11EBB1B9-B4CE-30D0-87C1-0242AC110003"
+	inputData.BusNo = "4601917"
+	inputData.ClientId = "ui3GUEtWPXr6E3WhyKDmknIWwlq3XCBJsKIAho4rXu5eO"
+	inputData.ClientSecret = "spElVWAzX6HTIC8RJtdhNpGW50rsj71I95ba7mzjMMq0Y"
+	inputData.DateFrom = ""
+	inputData.DateTo = ""
+	inputData.SortType = ""
 
 	// Build api and gRPC URIs
-	dmwContactStateApiUrl := buildUri("dmwGetStates", inputData)
-	dfoAuthTokenApiUrl := buildUri("dfoAuthToken", inputData)
-	dfoContactSearchApiUrl := buildUri("dfoContactSearch", inputData)
-	dfoContactByIdApiUrl := buildUri("dfoContactById", inputData)
-	dmwGrpcApiUrl := buildUri("dmwGrpc", inputData)
+	dmwContactStateApiUrl, log := buildUri("dmwGetStates", inputData, log)
+	dfoAuthTokenApiUrl, log := buildUri("dfoAuthToken", inputData, log)
+	dfoContactSearchApiUrl, log := buildUri("dfoContactSearch", inputData, log)
+	dfoContactByIdApiUrl, log := buildUri("dfoContactById", inputData, log)
+	dmwGrpcApiUrl, log := buildUri("dmwGrpc", inputData, log)
 
 	// Get DFO auth token
 	var dfoAuthTokenObj models.DfoAuthTokenObj
@@ -168,11 +168,11 @@ func main() {
 		method := "getDfoAuthToken"
 		t := time.Now()
 
-		logMsg = fmt.Sprintf("begin api call: getDfoAuthToken")
+		logMsg = fmt.Sprintf("begin api call: getDfoAuthToken\n")
 		fmt.Println(logMsg)
 		log = append(log, []byte(logMsg)...)
 
-		dfoAuthTokenObj, err = getDfoAuthToken(dfoAuthTokenApiUrl, inputData)
+		dfoAuthTokenObj, log, err = getDfoAuthToken(dfoAuthTokenApiUrl, inputData, log)
 		if err != nil {
 			dfoAuthTokenObj.Error = err
 
@@ -202,7 +202,7 @@ func main() {
 			fmt.Printf(logMsg)
 			log = append(log, []byte(logMsg)...)
 
-			dmwKnownContact, err = getDmwActiveContactStateData(dmwContactStateApiUrl, tenants)
+			dmwKnownContact, log, err = getDmwActiveContactStateData(dmwContactStateApiUrl, tenants, log)
 			if err != nil {
 				dmwKnownContact.Error = err
 
@@ -229,7 +229,7 @@ func main() {
 			fmt.Printf(logMsg)
 			log = append(log, []byte(logMsg)...)
 
-			dfoDataList, err = makeDfoContactSearchApiCall(dfoContactSearchApiUrl, inputData, dfoAuthTokenObj)
+			dfoDataList, log, err = makeDfoContactSearchApiCall(dfoContactSearchApiUrl, inputData, dfoAuthTokenObj, log)
 			if err != nil {
 				dfoData.Err = err
 
@@ -257,7 +257,7 @@ func main() {
 			log = append(log, []byte(logMsg)...)
 
 			t := time.Now()
-			deltaContacts = buildDeltaList(inputData, dmwKnownContact, dfoDataList)
+			deltaContacts, log = buildDeltaList(inputData, dmwKnownContact, dfoDataList, log)
 
 			logMsg = fmt.Sprintf("[%s] - done, duration=%s, deltaContacts=%d\n", method, time.Since(t), len(deltaContacts.Contacts))
 			fmt.Printf(logMsg)
@@ -280,7 +280,7 @@ func main() {
 
 	// Batch and Process records to digimiddleware using gRPC
 	if len(deltaContacts.Contacts) > 0 {
-		process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, inputData)
+		log = process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, inputData, log)
 	} else {
 		logMsg = fmt.Sprintf("comparison of lists returned 0 contacts to update - will not attempt to process updates")
 		fmt.Println(logMsg)
@@ -301,9 +301,10 @@ func main() {
 }
 
 // process batches the data into specified batchSize to process
-func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl string, inputData InputDataObj) {
+func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl string, inputData InputDataObj, log []byte) []byte {
 	batchCount := 1
 	var errList []models.DataView
+	var logMsg string
 	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
 
 	for start, end := 0, 0; start <= len(data)-1; start = end {
@@ -317,14 +318,27 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 
 		method := "processBatch"
 		t := time.Now()
-		fmt.Printf("begin processing batch [%d]\n", batchCount)
-		sanitizedUpdateRecords, errList = processBatch(batch, dfoContactByIdApiUrl, dfoAuthTokenObj, inputData)
-		fmt.Printf("[%s] [%d] - done, duration=%s, total records to update=%d\n", method, batchCount, time.Since(t), len(sanitizedUpdateRecords))
+
+		logMsg = fmt.Sprintf("begin processing batch [%d]\n", batchCount)
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		sanitizedUpdateRecords, log, errList = processBatch(batch, dfoContactByIdApiUrl, dfoAuthTokenObj, inputData, log)
+
+		logMsg = fmt.Sprintf("[%s] [%d] - done, duration=%s, total records to update=%d\n", method, batchCount, time.Since(t), len(sanitizedUpdateRecords))
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
+
 		if errList != nil {
-			fmt.Printf("ERROR processing batch - will not attempt to update below [%d] contacts\n", len(errList))
+			logMsg = fmt.Sprintf("ERROR processing batch - will not attempt to update below [%d] contacts\n", len(errList))
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
 			// Range over errList to print all errors together for more readable logs
 			for _, e := range errList {
-				fmt.Println(e.Err)
+				logMsg = fmt.Sprintln(e.Err)
+				fmt.Printf(logMsg)
+				log = append(log, []byte(logMsg)...)
 			}
 		}
 		batchCount++
@@ -332,23 +346,34 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 		// Push sanitizedUpdateRecords to digimiddleware via gRPC
 		if sanitizedUpdateRecords != nil {
 			method2 := "sendUpdateRecordsToMiddleware"
-			fmt.Printf("begin pushing updates to digimiddleware: [%s]\n", method2)
+
+			logMsg = fmt.Sprintf("begin pushing updates to digimiddleware: [%s]\n", method2)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
 			t := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
-			err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
+			log, err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
 				Updates:    sanitizedUpdateRecords,
 				ReceivedAt: timestamppb.Now(),
-			}, dmwGrpcApiUrl)
+			}, dmwGrpcApiUrl, log)
 
 			if err != nil {
-				fmt.Printf("[%s] error making grpc call to send update records to middleware: [%v]\n", method2, err)
+				logMsg = fmt.Sprintf("[%s] error making grpc call to send update records to middleware: [%v]\n", method2, err)
+				fmt.Printf(logMsg)
+				log = append(log, []byte(logMsg)...)
+
 				cancel()
-				return
+				return log
 			}
 			cancel()
-			fmt.Printf("[%s] - done, duration=%s, count=%d\n", method2, time.Since(t), len(sanitizedUpdateRecords))
+			logMsg = fmt.Sprintf("[%s] - done, duration=%s, count=%d\n", method2, time.Since(t), len(sanitizedUpdateRecords))
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		} else {
-			fmt.Printf("[%s] there were no contacts added to sanitizedUpdateRecords list - will not attempt to process updates\n", method)
+			logMsg = fmt.Sprintf("[%s] there were no contacts added to sanitizedUpdateRecords list - will not attempt to process updates\n", method)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		}
 	}
 
@@ -360,8 +385,12 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 	check(err)
 
 	for _, record := range sanitizedUpdateRecords {
+		logMsg = fmt.Sprintln(record)
 		fmt.Println(record)
+		log = append(log, []byte(logMsg)...)
 	}
+
+	return log
 }
 
 func check(e error) {
@@ -371,7 +400,7 @@ func check(e error) {
 }
 
 // processBatch calls DFO 3.0 GET Contact to obtain contact data to build the case update event
-func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, i InputDataObj) ([]*pbm.CaseUpdateEvent, []models.DataView) {
+func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, i InputDataObj, log []byte) ([]*pbm.CaseUpdateEvent, []byte, []models.DataView) {
 	var errList []models.DataView
 	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
 	var wg sync.WaitGroup
@@ -381,9 +410,10 @@ func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, df
 		go func(contact models.DmwKnownContact, errList []models.DataView) {
 			defer wg.Done()
 			var contactData models.DataView
+			var l []byte
 			var mtx sync.Mutex
 			// Call DFO 3.0 GET Contacts by contactId for each record in Delta list to obtain actual metadata for contact
-			contactData = makeDfoContactByIdApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, contact)
+			contactData, l = makeDfoContactByIdApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, contact, l)
 
 			if contactData.Err == nil {
 				// Create the Update Event object from the contactData received from DFO
@@ -400,6 +430,7 @@ func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, df
 				if updateMessage != nil && contactData.Err == nil {
 					mtx.Lock()
 					sanitizedUpdateRecords = append(sanitizedUpdateRecords, updateMessage)
+					log = append(log, l...)
 					mtx.Unlock()
 				}
 			} else {
@@ -409,24 +440,34 @@ func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, df
 	}
 	wg.Wait()
 
-	return sanitizedUpdateRecords, errList
+	return sanitizedUpdateRecords, log, errList
 }
 
-func buildUri(apiType string, i InputDataObj) string {
-	fmt.Printf("%s uri for requested region [%s] and env [%s] -- ", apiType, i.Region, i.Env)
+func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 	uri := ""
+
+	logMsg := fmt.Sprintf("%s uri for requested region [%s] and env [%s] -- ", apiType, i.Region, i.Env)
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+
 	switch apiType {
 	case "dmwGetStates":
 		uri = dmwApiUrlPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + dmwApiPort + dmwApiPath + dmwGetStatesEndpoint
-		fmt.Println(uri)
+		logMsg = fmt.Sprintln(uri)
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
 	case "dfoAuthToken":
 		switch i.Env {
 		case "prod":
 			uri = dfoApiUrlPrefix + i.Region + dfoApiV2Path + dfoAuthTokenEndpoint
-			fmt.Println(uri)
+			logMsg = fmt.Sprintln(uri)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		case "dev", "test", "staging":
 			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV2Path + dfoAuthTokenEndpoint
-			fmt.Println(uri)
+			logMsg = fmt.Sprintln(uri)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		default:
 			break
 		}
@@ -434,10 +475,14 @@ func buildUri(apiType string, i InputDataObj) string {
 		switch i.Env {
 		case "prod":
 			uri = dfoApiUrlPrefix + i.Region + dfoApiV3Path + dfoContactSearchEndpoint
-			fmt.Println(uri)
+			logMsg = fmt.Sprintln(uri)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		case "dev", "test", "staging":
 			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV3Path + dfoContactSearchEndpoint
-			fmt.Println(uri)
+			logMsg = fmt.Sprintln(uri)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		default:
 			break
 		}
@@ -445,20 +490,26 @@ func buildUri(apiType string, i InputDataObj) string {
 		switch i.Env {
 		case "prod":
 			uri = dfoApiUrlPrefix + i.Region + dfoApiV3Path + dfoContactByIdEndpoint
-			fmt.Println(uri)
+			logMsg = fmt.Sprintln(uri)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		case "dev", "test", "staging":
 			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV3Path + dfoContactByIdEndpoint
-			fmt.Println(uri)
+			logMsg = fmt.Sprintln(uri)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 		default:
 			break
 		}
 	case "dmwGrpc":
 		uri = dmwGrpcUriPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + dmwGrpcPort
-		fmt.Println(uri)
+		logMsg = fmt.Sprintln(uri)
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
 	default:
 		break
 	}
-	return uri
+	return uri, log
 }
 
 // promptForInputData sends request for input data and validates the values, then returns the response
@@ -554,9 +605,10 @@ func validateResponse(inputValue string, inputType string, inputValueValid bool)
 }
 
 // getDmwActiveContactStateData calls the Digimiddleware api POST digimiddleware/getstatesbytenants to get the list of contacts stored in DynamoDB
-func getDmwActiveContactStateData(apiUrl string, tenants [1]string) (models.DmwKnownContacts, error) {
+func getDmwActiveContactStateData(apiUrl string, tenants [1]string, log []byte) (models.DmwKnownContacts, []byte, error) {
 	var dmwKnownContact models.DmwKnownContacts
 	contentType := "application/json"
+	var logMsg string
 	method := "getDmwActiveContactStateData"
 	var tenantIdsObj TenantIdsObj
 	tenantIdsObj.TenantIDs = tenants
@@ -568,16 +620,21 @@ func getDmwActiveContactStateData(apiUrl string, tenants [1]string) (models.DmwK
 	response, err := http.Post(apiUrl, contentType, reader)
 
 	if err != nil {
-		fmt.Print(err.Error())
-		os.Exit(1)
-		return dmwKnownContact, err
+		logMsg = err.Error()
+		fmt.Print(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		return dmwKnownContact, log, err
 	}
 
 	if response.StatusCode == 200 {
 		responseData, err = ioutil.ReadAll(response.Body)
 		if err != nil {
-			fmt.Print(err.Error())
-			return dmwKnownContact, err
+			logMsg = err.Error()
+			fmt.Print(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			return dmwKnownContact, log, err
 		}
 	} else {
 		fmt.Printf(method+httpBadResponse, response.StatusCode, response.Status)
@@ -586,8 +643,11 @@ func getDmwActiveContactStateData(apiUrl string, tenants [1]string) (models.DmwK
 	if responseData != nil {
 		err = json.Unmarshal(responseData, &dmwKnownContact)
 		if err != nil {
-			fmt.Printf("[%s] cannot unmarshal dmw response: [%v]\n", method, err)
-			return dmwKnownContact, err
+			logMsg = fmt.Sprintf("[%s] cannot unmarshal dmw response: [%v]\n", method, err)
+			fmt.Print(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			return dmwKnownContact, log, err
 		}
 	}
 
@@ -595,17 +655,18 @@ func getDmwActiveContactStateData(apiUrl string, tenants [1]string) (models.DmwK
 		return dmwKnownContact.Contacts[i].ContactID < dmwKnownContact.Contacts[j].ContactID
 	})
 
-	return dmwKnownContact, err
+	return dmwKnownContact, log, err
 }
 
 // getDfoAuthToken calls the DFO api POST engager/2.0/token to get a bearer token for subsequent DFO api calls
-func getDfoAuthToken(apiUrl string, i InputDataObj) (models.DfoAuthTokenObj, error) {
+func getDfoAuthToken(apiUrl string, i InputDataObj, log []byte) (models.DfoAuthTokenObj, []byte, error) {
 	contentType := "application/json"
 	var dfoAuthTokenBody models.DfoAuthTokenBody
 	dfoAuthTokenBody.GrantType = "client_credentials"
 	dfoAuthTokenBody.ClientId = i.ClientId
 	dfoAuthTokenBody.ClientSecret = i.ClientSecret
 	var dfoAuthTokenObj models.DfoAuthTokenObj
+	var logMsg string
 	method := "getDfoAuthToken"
 
 	bodyJson, _ := json.Marshal(dfoAuthTokenBody)
@@ -615,16 +676,21 @@ func getDfoAuthToken(apiUrl string, i InputDataObj) (models.DfoAuthTokenObj, err
 	response, err := http.Post(apiUrl, contentType, reader)
 
 	if err != nil {
-		fmt.Print(err.Error())
-		os.Exit(1)
-		return dfoAuthTokenObj, err
+		logMsg = fmt.Sprintf(err.Error())
+		fmt.Print(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		return dfoAuthTokenObj, log, err
 	}
 
 	if response.StatusCode == 200 {
 		responseData, err = ioutil.ReadAll(response.Body)
 		if err != nil {
-			fmt.Print(err.Error())
-			return dfoAuthTokenObj, err
+			logMsg = fmt.Sprintf(err.Error())
+			fmt.Print(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			return dfoAuthTokenObj, log, err
 		}
 	} else {
 		fmt.Printf(method+httpBadResponse, response.StatusCode, response.Status)
@@ -633,25 +699,34 @@ func getDfoAuthToken(apiUrl string, i InputDataObj) (models.DfoAuthTokenObj, err
 	if responseData != nil {
 		err = json.Unmarshal(responseData, &dfoAuthTokenObj)
 		if err != nil {
-			fmt.Printf("[%s] cannot unmarshal dfo auth token: [%v]\n", method, err)
-			return dfoAuthTokenObj, err
+			logMsg = fmt.Sprintf("[%s] cannot unmarshal dfo auth token: [%v]\n", method, err)
+			fmt.Print(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			return dfoAuthTokenObj, log, err
 		}
 	} else {
-		fmt.Printf("[%s] dfo auth token was null or empty\n", method)
-		return dfoAuthTokenObj, err
+		logMsg = fmt.Sprintf("[%s] dfo auth token was null or empty\n", method)
+		fmt.Print(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		return dfoAuthTokenObj, log, err
 	}
 
-	fmt.Printf("[%s] dfo auth token successfully retrieved\n", method)
+	logMsg = fmt.Sprintf("[%s] dfo auth token successfully retrieved\n", method)
+	fmt.Print(logMsg)
+	log = append(log, []byte(logMsg)...)
 
-	return dfoAuthTokenObj, err
+	return dfoAuthTokenObj, log, err
 }
 
 // makeDfoContactSearchApiCall calls the DFO 3.0 GET Contact Search Api then loops until all data is retrieved (api only returns 25 records at a time)
-func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, dfoAuthTokenObj models.DfoAuthTokenObj) ([]models.DataView, error) {
+func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, dfoAuthTokenObj models.DfoAuthTokenObj, log []byte) ([]models.DataView, []byte, error) {
 	var apiUrl DfoApiUrlObj
 	var dfoActiveContactList models.DfoContactSearchResponse
 	var dfoData []models.DataView
 	var hits int32 = 25
+	var logMsg string
 	method := "makeDfoContactSearchApiCall"
 	var mtx sync.Mutex
 
@@ -674,22 +749,30 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 	// Call DFO 3.0 GET Contact Search which returns 1st 25 records
 	dfoResponse, err := makeDfoApiCall(apiUrl.Url, dfoAuthTokenObj, "")
 	if err != nil {
-		return nil, err
+		return nil, log, err
 	}
 	if dfoResponse != nil {
 		err = json.Unmarshal(dfoResponse, &dfoActiveContactList)
 		if err != nil {
-			fmt.Printf("[%s] received dfo response but unable to unmarshal object - error: [%v]\n", method, err)
-			return nil, err
+			logMsg = fmt.Sprintf("[%s] received dfo response but unable to unmarshal object - error: [%v]\n", method, err)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			return nil, log, err
 		}
 	}
 
 	if dfoActiveContactList.Hits == 0 {
-		fmt.Printf("[%s] returned 0 records\n", method)
-		return nil, err
+		logMsg = fmt.Sprintf("[%s] returned 0 records\n", method)
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		return nil, log, err
 	}
 
-	fmt.Printf("[%s] returned [%v] total hits\n", method, dfoActiveContactList.Hits)
+	logMsg = fmt.Sprintf("[%s] returned [%v] total hits\n", method, dfoActiveContactList.Hits)
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
 
 	// Append first 25 Data records to Data list
 	mtx.Lock()
@@ -703,19 +786,25 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 		for hits <= dfoActiveContactList.Hits {
 			// Call DFO 3.0 GET Contact Search to get next 25 records
 			hits += 25
-			fmt.Printf("calling [%s] to get next set of records up to [%v]\n", method, hits)
+
+			logMsg = fmt.Sprintf("calling [%s] to get next set of records up to [%v]\n", method, hits)
+			fmt.Printf(logMsg)
+			log = append(log, []byte(logMsg)...)
 
 			apiUrl.Url = dfoContactSearchApiUrl + apiUrl.ScrollToken + dfoActiveContactList.ScrollToken
 			dfoResponse, err = makeDfoApiCall(apiUrl.Url, dfoAuthTokenObj, "")
 			if err != nil {
-				return nil, err
+				return nil, log, err
 			}
 
 			if dfoResponse != nil {
 				err = json.Unmarshal(dfoResponse, &dfoActiveContactList)
 				if err != nil {
-					fmt.Printf("[%s] received dfo response but unable to unmarshal object - error: [%v]\n", method, err)
-					return nil, err
+					logMsg = fmt.Sprintf("[%s] received dfo response but unable to unmarshal object - error: [%v]\n", method, err)
+					fmt.Printf(logMsg)
+					log = append(log, []byte(logMsg)...)
+
+					return nil, log, err
 				}
 
 				// Append next set of Data records to Data list
@@ -729,15 +818,16 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 		return dfoData[i].Id < dfoData[j].Id
 	})
 
-	return dfoData, nil
+	return dfoData, log, nil
 }
 
 // buildDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
-func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfoData []models.DataView) models.DmwKnownContacts {
+func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfoData []models.DataView, log []byte) (models.DmwKnownContacts, []byte) {
 	type DmwContacts []models.DmwKnownContact
 	deltaArray := DmwContacts{}
 	var deltaList models.DmwKnownContacts
 	foundCount := 0
+	var logMsg string
 	notFoundCount := 0
 	alreadyClosedCount := 0
 
@@ -768,7 +858,6 @@ func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfo
 				if contact.ContactID == dataId {
 					found = true
 					foundCount++
-					//fmt.Printf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*DfoContactState*[%s]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, d.Status, contact.CurrentContactDate)
 					break
 				} else {
 					shouldClose = true
@@ -777,7 +866,10 @@ func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfo
 
 			if !found && shouldClose {
 				notFoundCount++
-				fmt.Printf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, contact.CurrentContactDate)
+
+				logMsg = fmt.Sprintf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, contact.CurrentContactDate)
+				fmt.Printf(logMsg)
+				log = append(log, []byte(logMsg)...)
 			}
 		} else {
 			alreadyClosedCount++
@@ -814,16 +906,26 @@ func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfo
 		}
 	}
 
-	fmt.Printf("total dmw known contacts: %d\n", len(dmwKnownContact.Contacts))
-	fmt.Printf("total contacts that were already closed (will not attempt to update): %d\n", alreadyClosedCount)
-	fmt.Printf("total contacts that were not found (will attempt to update): %d\n", notFoundCount)
-	fmt.Printf("total contacts that were found (will not attempt to update): %d\n", foundCount)
-	return deltaList
+	logMsg = fmt.Sprintf("total dmw known contacts: %d\n", len(dmwKnownContact.Contacts))
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+	logMsg = fmt.Sprintf("total contacts that were already closed (will not attempt to update): %d\n", alreadyClosedCount)
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+	logMsg = fmt.Sprintf("total contacts that were not found (will attempt to update): %d\n", notFoundCount)
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+	logMsg = fmt.Sprintf("total contacts that were found (will not attempt to update): %d\n", foundCount)
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+
+	return deltaList, log
 }
 
-// makeDfoContactByIdApiCall
-func makeDfoContactByIdApiCall(dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, contact models.DmwKnownContact) models.DataView {
+// makeDfoContactByIdApiCall calls makeDfoApiCall to get each contact data by contact id
+func makeDfoContactByIdApiCall(dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, contact models.DmwKnownContact, log []byte) (models.DataView, []byte) {
 	var dfoClosedContactData models.DataView
+	var logMsg string
 
 	dfoResponse, respErr := makeDfoApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, strconv.Itoa(int(contact.ContactID)))
 	if respErr != nil {
@@ -835,10 +937,13 @@ func makeDfoContactByIdApiCall(dfoContactByIdApiUrl string, dfoAuthTokenObj mode
 			dfoClosedContactData.Err = respErr
 			dfoClosedContactData.Id = strconv.FormatInt(contact.ContactID, 10)
 		}
-		fmt.Printf("success: received dfo data for contactId: [%d]\n", contact.ContactID)
+
+		logMsg = fmt.Sprintf("success: received dfo data for contactId: [%d]\n", contact.ContactID)
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
 	}
 
-	return dfoClosedContactData
+	return dfoClosedContactData, log
 }
 
 // makeDfoApiCall calls DFO 3.0 APIs and returns the response object
@@ -1019,60 +1124,95 @@ func recipientMap(recipients []models.Recipient) []*pbm.Recipient {
 	return results
 }
 
-func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEvents, dmwGrpcApiUrl string) error {
+func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEvents, dmwGrpcApiUrl string, log []byte) ([]byte, error) {
+	var logMsg string
 	method := "sendUpdateRecordsToMiddleware"
-	if len(events.Updates) == 0 {
-		fmt.Printf("[%s] no case update events were created\n", method)
-		return nil
-	} else {
-		fmt.Printf("[%s] total count of case event updates to be sent to digimiddleware [%v]\n", method, len(events.Updates))
-	}
 
-	//op := digierrors.Op("sendUpdateRecordsToMiddleware")
+	if len(events.Updates) == 0 {
+		logMsg = fmt.Sprintf("[%s] no case update events were created\n", method)
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		return log, nil
+	} else {
+		logMsg = fmt.Sprintf("[%s] total count of case event updates to be sent to digimiddleware [%v]\n", method, len(events.Updates))
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
+	}
 
 	// Create gRPC client to pass CaseEventUpdate to digimiddleware
 	method2 := "createGrpcClient"
 	t := time.Now()
-	fmt.Printf("begin create grpc client: [%s]\n", method2)
-	//middlewareEventService := createGrpcClient(dmwGrpcApiUrl)
-	fmt.Printf("[%s] - done, duration=%s\n", method2, time.Since(t))
 
-	//if middlewareEventService == nil {
-	//	return nil
-	//}
+	logMsg = fmt.Sprintf("begin create grpc client: [%s]\n", method2)
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+
+	middlewareEventService, log := createGrpcClient(dmwGrpcApiUrl, log)
+
+	logMsg = fmt.Sprintf("[%s] - done, duration=%s\n", method2, time.Since(t))
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+
+	if middlewareEventService == nil {
+		return log, nil
+	}
 
 	method3 := "CaseEventUpdate"
 	t = time.Now()
-	fmt.Printf("begin grpc call to update records in digimiddleware: [%s]\n", method3)
+
+	logMsg = fmt.Sprintf("begin grpc call to update records in digimiddleware: [%s]\n", method3)
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+
 	//response, err := middlewareEventService.CaseEventUpdate(ctx, events)
-	fmt.Printf("[%s] - done, duration=%s\n", method3, time.Since(t))
+	logMsg = fmt.Sprintf("[%s] - done, duration=%s\n", method3, time.Since(t))
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
 
 	//if err != nil {
 	//	// Failure to deliver to Middleware (e.g., network errors, etc.)
-	//	return digierrors.E(op, digierrors.IsRetryable, zapcore.ErrorLevel, err)
+	//	logMsg = fmt.Sprintln(err.Error())
+	//	fmt.Printf(logMsg)
+	//	log = append(log, []byte(logMsg)...)
 	//}
 
 	// If we got an error response, then the Middleware indicates this is retryable. Return an error here.
 	//errStr := response.GetErr()
 	//if errStr != "" {
-	//	fmt.Printf("[%s] received error from case update grpc: [%v]\n", method3, errStr)
-	//	return digierrors.E(op, digierrors.IsRetryable, zapcore.ErrorLevel, errors.New(errStr))
+	//	logMsg = fmt.Sprintf("[%s] received error from case update grpc: [%v]\n", method3, errStr)
+	//	fmt.Printf(logMsg)
+	//	log = append(log, []byte(logMsg)...)
+	//
+	//	return log, nil
 	//}
-	fmt.Printf("[%s] wrote case update records to grpc - records count: [%v]\n", method3, len(events.Updates))
-	return nil
+
+	logMsg = fmt.Sprintf("[%s] wrote case update records to grpc - records count: [%v]\n", method3, len(events.Updates))
+	fmt.Printf(logMsg)
+	log = append(log, []byte(logMsg)...)
+
+	return log, nil
 }
 
-func createGrpcClient(dmwGrpcApiUrl string) digiservice.GrpcService {
+func createGrpcClient(dmwGrpcApiUrl string, log []byte) (digiservice.GrpcService, []byte) {
 	digimiddlewareGrpcAddr := dmwGrpcApiUrl
+	var logMsg string
+
 	conn, err := grpc.Dial(digimiddlewareGrpcAddr, grpc.WithInsecure())
 	method := "createGrpcClient"
 	if err != nil {
-		fmt.Printf("[%s] initialization of digimiddleware grpc client failed with err: [%v]\n", method, err)
-		return nil
+		logMsg = fmt.Sprintf("[%s] initialization of digimiddleware grpc client failed with err: [%v]\n", method, err)
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		return nil, log
 	} else {
-		fmt.Println("grpc client initialized")
+		logMsg = fmt.Sprintf("grpc client initialized\n")
+		fmt.Printf(logMsg)
+		log = append(log, []byte(logMsg)...)
 	}
 
 	middlewareEventService := digitransport.NewGRPCClient(conn, nil, nil)
-	return middlewareEventService
+
+	return middlewareEventService, log
 }
