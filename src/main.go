@@ -604,60 +604,6 @@ func validateResponse(inputValue string, inputType string) bool {
 	}
 }
 
-// getDmwActiveContactStateData calls the Digimiddleware api POST digimiddleware/getstatesbytenants to get the list of contacts stored in DynamoDB
-func getDmwActiveContactStateData(apiUrl string, tenants [1]string, log []byte) (models.DmwKnownContacts, []byte, error) {
-	var dmwKnownContact models.DmwKnownContacts
-	contentType := "application/json"
-	var logMsg string
-	method := "getDmwActiveContactStateData"
-	var tenantIdsObj TenantIdsObj
-	tenantIdsObj.TenantIDs = tenants
-
-	bodyJson, _ := json.Marshal(tenantIdsObj)
-	reader := bytes.NewReader(bodyJson)
-	var responseData []byte
-
-	response, err := http.Post(apiUrl, contentType, reader)
-
-	if err != nil {
-		logMsg = err.Error()
-		fmt.Print(logMsg)
-		log = append(log, []byte(logMsg)...)
-
-		return dmwKnownContact, log, err
-	}
-
-	if response.StatusCode == 200 {
-		responseData, err = ioutil.ReadAll(response.Body)
-		if err != nil {
-			logMsg = err.Error()
-			fmt.Print(logMsg)
-			log = append(log, []byte(logMsg)...)
-
-			return dmwKnownContact, log, err
-		}
-	} else {
-		fmt.Printf(method+httpBadResponse, response.StatusCode, response.Status)
-	}
-
-	if responseData != nil {
-		err = json.Unmarshal(responseData, &dmwKnownContact)
-		if err != nil {
-			logMsg = fmt.Sprintf("[%s] cannot unmarshal dmw response: [%v]\n", method, err)
-			fmt.Print(logMsg)
-			log = append(log, []byte(logMsg)...)
-
-			return dmwKnownContact, log, err
-		}
-	}
-
-	sort.SliceStable(dmwKnownContact.Contacts, func(i, j int) bool {
-		return dmwKnownContact.Contacts[i].ContactID < dmwKnownContact.Contacts[j].ContactID
-	})
-
-	return dmwKnownContact, log, err
-}
-
 // getDfoAuthToken calls the DFO api POST engager/2.0/token to get a bearer token for subsequent DFO api calls
 func getDfoAuthToken(apiUrl string, i InputDataObj, log []byte) (models.DfoAuthTokenObj, []byte, error) {
 	contentType := "application/json"
@@ -718,6 +664,60 @@ func getDfoAuthToken(apiUrl string, i InputDataObj, log []byte) (models.DfoAuthT
 	log = append(log, []byte(logMsg)...)
 
 	return dfoAuthTokenObj, log, err
+}
+
+// getDmwActiveContactStateData calls the Digimiddleware api POST digimiddleware/getstatesbytenants to get the list of contacts stored in DynamoDB
+func getDmwActiveContactStateData(apiUrl string, tenants [1]string, log []byte) (models.DmwKnownContacts, []byte, error) {
+	var dmwKnownContact models.DmwKnownContacts
+	contentType := "application/json"
+	var logMsg string
+	method := "getDmwActiveContactStateData"
+	var tenantIdsObj TenantIdsObj
+	tenantIdsObj.TenantIDs = tenants
+
+	bodyJson, _ := json.Marshal(tenantIdsObj)
+	reader := bytes.NewReader(bodyJson)
+	var responseData []byte
+
+	response, err := http.Post(apiUrl, contentType, reader)
+
+	if err != nil {
+		logMsg = err.Error()
+		fmt.Print(logMsg)
+		log = append(log, []byte(logMsg)...)
+
+		return dmwKnownContact, log, err
+	}
+
+	if response.StatusCode == 200 {
+		responseData, err = ioutil.ReadAll(response.Body)
+		if err != nil {
+			logMsg = err.Error()
+			fmt.Print(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			return dmwKnownContact, log, err
+		}
+	} else {
+		fmt.Printf(method+httpBadResponse, response.StatusCode, response.Status)
+	}
+
+	if responseData != nil {
+		err = json.Unmarshal(responseData, &dmwKnownContact)
+		if err != nil {
+			logMsg = fmt.Sprintf("[%s] cannot unmarshal dmw response: [%v]\n", method, err)
+			fmt.Print(logMsg)
+			log = append(log, []byte(logMsg)...)
+
+			return dmwKnownContact, log, err
+		}
+	}
+
+	sort.SliceStable(dmwKnownContact.Contacts, func(i, j int) bool {
+		return dmwKnownContact.Contacts[i].ContactID < dmwKnownContact.Contacts[j].ContactID
+	})
+
+	return dmwKnownContact, log, err
 }
 
 // makeDfoContactSearchApiCall calls the DFO 3.0 GET Contact Search Api then loops until all data is retrieved (api only returns 25 records at a time)
