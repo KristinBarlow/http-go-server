@@ -6,3 +6,15 @@
 /dataSources.local.xml
 # Editor-based HTTP Client requests
 /httpRequests/
+
+*.terraform
+.terraform.lock.hcl
+*.tfstate
+*node_modules
+*.log
+.serverless
+.webpack
+.DS_Store
+.idea/
+.vs/
+yarn-error.log

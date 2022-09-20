@@ -294,10 +294,9 @@ func main() {
 	log = append(log, []byte(logMsg)...)
 
 	// Create output log file
-	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\Logs\\LOG_%s_%s_%d.csv", inputData.Cluster, inputData.BusNo, time.Now().UnixNano())
+	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\Logs\\LOG_%s_%s_%d", inputData.Cluster, inputData.BusNo, time.Now().UnixNano())
 
-	err := os.WriteFile(filepath, log, 0644)
-	check(err)
+	writeLogFile(".csv", filepath, log)
 }
 
 // process batches the data into specified batchSize to process
@@ -305,6 +304,8 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 	batchCount := 1
 	var errList []models.DataView
 	var logMsg string
+	method := "processBatch"
+	method2 := "sendUpdateRecordsToMiddleware"
 	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
 
 	for start, end := 0, 0; start <= len(data)-1; start = end {
@@ -316,7 +317,6 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 		}
 		batch := data[start:end]
 
-		method := "processBatch"
 		t := time.Now()
 
 		logMsg = fmt.Sprintf("begin processing batch [%d]\n", batchCount)
@@ -345,7 +345,6 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 
 		// Push sanitizedUpdateRecords to digimiddleware via gRPC
 		if sanitizedUpdateRecords != nil {
-			method2 := "sendUpdateRecordsToMiddleware"
 
 			logMsg = fmt.Sprintf("begin pushing updates to digimiddleware: [%s]\n", method2)
 			fmt.Printf(logMsg)
@@ -378,11 +377,11 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 	}
 
 	// Create output file and print updated contacts to console
-	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\%s_%s_%d.csv", inputData.Cluster, inputData.BusNo, time.Now().UnixNano())
+	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\%s_%s_%d", inputData.Cluster, inputData.BusNo, time.Now().UnixNano())
 
 	mr, _ := json.Marshal(sanitizedUpdateRecords)
-	err := os.WriteFile(filepath, mr, 0644)
-	check(err)
+
+	writeLogFile(".csv", filepath, mr)
 
 	for _, record := range sanitizedUpdateRecords {
 		logMsg = fmt.Sprintln(record)
@@ -391,12 +390,6 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 	}
 
 	return log
-}
-
-func check(e error) {
-	if e != nil {
-		panic(e)
-	}
 }
 
 // processBatch calls DFO 3.0 GET Contact to obtain contact data to build the case update event
@@ -518,7 +511,7 @@ func promptForInputData(inputType string, requestType string) string {
 
 	validInputData := false
 	for !validInputData {
-		validInputData = validateResponse(response, inputType, validInputData)
+		validInputData = validateResponse(response, inputType)
 		if !validInputData {
 			response = getInputData(requestType)
 		}
@@ -540,68 +533,75 @@ func getInputData(inputType string) string {
 }
 
 // validateResponse verifies that the data input by the user was in a proper type or format
-func validateResponse(inputValue string, inputType string, inputValueValid bool) bool {
+func validateResponse(inputValue string, inputType string) bool {
 	switch inputType {
 	case "region":
 		switch strings.ToLower(inputValue) {
 		case "na1", "au1", "eu1", "jp1", "uk1", "ca1":
-			inputValueValid = true
+			return true
 		default:
 			fmt.Println("INPUT VALUE IS NOT A VALID REGION NAME: (\"na1\", \"au1\", \"eu1\", \"jp1\", \"uk1\", \"ca1\")")
+			return false
 		}
 	case "env":
 		switch strings.ToLower(inputValue) {
 		case "dev", "test", "staging", "prod":
-			inputValueValid = true
+			return true
 		default:
 			fmt.Println("INPUT VALUE IS NOT A VALID ENVIRONMENT NAME: (\"dev\", \"test\", \"staging\", \"prod\")")
+			return false
 		}
 	case "cluster":
 		if len(inputValue) > 2 || len(inputValue) < 5 {
-			inputValueValid = true
+			return true
 		} else {
 			fmt.Println("INPUT VALUE IS NOT THE PROPER STRING LENGTH")
+			return false
 		}
 	case "tenantId":
 		if _, err := uuid.Parse(inputValue); err != nil {
 			fmt.Println("INPUT VALUE IS NOT A VALID GUID")
+			return false
 		} else {
-			inputValueValid = true
+			return true
 		}
 	case "clientCreds":
 		if len(inputValue) != 45 {
 			fmt.Println("INPUT VALUE IS NOT THE PROPER STRING LENGTH (45)")
+			return false
 		} else {
-			inputValueValid = true
+			return true
 		}
 	case "busNo":
 		if _, err := strconv.ParseInt(inputValue, 10, 32); err != nil {
 			fmt.Println("INPUT VALUE IS NOT A VALID BUSNO - SHOULD BE AN INTEGER")
+			return false
 		} else {
-			inputValueValid = true
+			return true
 		}
 	case "dateFrom", "dateTo":
 		if inputValue != "" {
 			re := regexp.MustCompile("^\\d{4}\\-(0[1-9]|1[012])\\-(0[1-9]|[12][0-9]|3[01])$") // regex for date format YYYY-mm-dd
 			if re.MatchString(inputValue) {
-				inputValueValid = true
+				return true
 			} else {
 				fmt.Println("INPUT VALUE IS NOT IN THE PROPER DATE FORMAT \"YYYY-mm-dd\"")
+				return false
 			}
 		} else {
-			inputValueValid = true
+			return true
 		}
 	case "sortType":
 		switch strings.ToLower(inputValue) {
 		case "asc", "desc":
-			inputValueValid = true
+			return true
 		default:
 			fmt.Println("INPUT VALUE IS NOT A VALID SORT TYPE: (\"asc\", \"desc\")")
+			return false
 		}
 	default:
-		return inputValueValid
+		return false
 	}
-	return inputValueValid
 }
 
 // getDmwActiveContactStateData calls the Digimiddleware api POST digimiddleware/getstatesbytenants to get the list of contacts stored in DynamoDB
@@ -1215,4 +1215,15 @@ func createGrpcClient(dmwGrpcApiUrl string, log []byte) (digiservice.GrpcService
 	middlewareEventService := digitransport.NewGRPCClient(conn, nil, nil)
 
 	return middlewareEventService, log
+}
+
+// writeLogFile is a helper function to output a log file to path
+func writeLogFile(fileMode, filepath string, file []byte) {
+	filepath = filepath + fileMode
+
+	err := os.WriteFile(filepath, file, 0644)
+	if err != nil {
+		// If error writing log files, print error but continue program
+		fmt.Printf("There was an error writing logs to %s - error: %s", filepath, err)
+	}
 }
