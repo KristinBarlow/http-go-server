@@ -26,13 +26,21 @@ import (
 
 const (
 	// Batch size for processing contacts to update (arbitrarily chose 100 as it seemed safe and manageable)
-	batchSize = 100
+	batchSize   = 100
+	contentType = "application/json"
+
+	// CxOne api url path variables
+	cxoneApiUrlPrefix          = "https://"
+	cxoneApiPath               = ".nice-incontact.com/"
+	cxoneGetTenantByIdEndpoint = "tenants/id/"
+	cxoneGetTokenEndpoint      = "authentication/v1/token/access-key"
 
 	// DFO api url path variables
 	dfoApiUrlPrefix          = "https://api-de-"
 	dfoApiV2Path             = ".niceincontact.com/engager/2.0"
 	dfoApiV3Path             = ".niceincontact.com/dfo/3.0"
 	dfoAuthTokenEndpoint     = "/token"
+	dfoGetChannelsEndpoint   = "/channels"
 	dfoContactSearchEndpoint = "/contacts?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
 	dfoContactByIdEndpoint   = "/contacts/"
 
@@ -47,16 +55,16 @@ const (
 	dmwGrpcPort      = "9884"
 
 	// "Prompt for input" string variables in order they are prompted
-	regionRequest       = "region - i.e. \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
-	envRequest          = "environment - i.e. \"dev\", \"test\", \"staging\", \"prod\""
-	clusterRequest      = "cluster - i.e. \"DO74\", \"SO32\", \"C32\""
-	tenantGuidRequest   = "tenantID (in GUID format)"
-	busNoRequest        = "business unit number"
-	clientIdRequest     = "dfo clientId"
-	clientSecretRequest = "dfo clientSecret"
-	dateFromRequest     = "\"FromDate\" using format \"YYYY-mm-dd\" (OPTIONAL: Return for no date filter)"
-	dateToRequest       = "\"ToDate\" in format \"YYYY-mm-dd\""
-	sortTypeRequest     = "sort order - \"asc\" for ascending order or \"desc\" for descending order"
+	regionRequest          = "region - i.e. \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
+	envRequest             = "environment - i.e. \"dev\", \"test\", \"staging\", \"prod\""
+	tenantGuidRequest      = "tenantID (in GUID format)"
+	accessKeyIdRequest     = "cxone accessKeyId (decode k9s - :secrets - digimiddleware-mcr-access-details)"
+	accessKeySecretRequest = "cxone accessKeySecret (decode k9s - :secrets - digimiddleware-mcr-access-details)"
+	clientIdRequest        = "dfo clientId"
+	clientSecretRequest    = "dfo clientSecret"
+	dateFromRequest        = "\"FromDate\" using format \"YYYY-mm-dd\" (OPTIONAL: Return for no date filter)"
+	dateToRequest          = "\"ToDate\" in format \"YYYY-mm-dd\""
+	notFoundFlag           = "\"Yes\" if you want to also process any records that are not found in DFO but exist in Digimiddleware, otherwise leave blank.  If you don't know, LEAVE BLANK."
 
 	// Log string for http responses other than 200
 	httpBadResponse = " returned response other than 200 success - response.StatusCode: [%d], response.Status: [%s]\n"
@@ -74,19 +82,19 @@ type DfoApiUrlObj struct {
 
 // Input variables in order they are requested
 type InputDataObj struct {
-	BusNo        string
-	ClientId     string
-	ClientSecret string
-	Cluster      string
-	DateFrom     string
-	DateTo       string
-	Env          string
-	Region       string
-	SortType     string
-	TenantId     string
+	AccessKeyId     string
+	AccessKeySecret string
+	ClientId        string
+	ClientSecret    string
+	DateFrom        string
+	DateTo          string
+	Env             string
+	processNotFound string
+	Region          string
+	TenantId        string
 }
 
-type TenantIdsObj struct {
+type TenantIdsWrapper struct {
 	TenantIDs [1]string `json:"tenantIds"`
 }
 
@@ -104,20 +112,23 @@ func main() {
 	//Prompt for needed input data
 	inputData.Region = promptForInputData("region", regionRequest)
 	inputData.Env = promptForInputData("env", envRequest)
-	inputData.Cluster = promptForInputData("cluster", clusterRequest)
+	inputData.AccessKeyId = promptForInputData("accessKeyCreds", accessKeyIdRequest)
+	inputData.AccessKeySecret = promptForInputData("accessKeyCreds", accessKeySecretRequest)
 	inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
-	inputData.BusNo = promptForInputData("busNo", busNoRequest)
 	inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
 	inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
 	inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
 	if inputData.DateFrom != "" {
 		inputData.DateTo = promptForInputData("dateTo", dateToRequest)
-		inputData.SortType = promptForInputData("sortType", sortTypeRequest)
 	}
+	inputData.processNotFound = promptForInputData("notFound", notFoundFlag)
 
 	// Build api and gRPC URIs
+	cxoneGetServiceTokenApiUrl, logFile := buildUri("cxoneGetToken", inputData, logFile)
+	cxoneGetTenantByIdApiUrl, logFile := buildUri("cxoneGetTenant", inputData, logFile)
 	dmwContactStateApiUrl, logFile := buildUri("dmwGetStates", inputData, logFile)
 	dfoAuthTokenApiUrl, logFile := buildUri("dfoAuthToken", inputData, logFile)
+	dfoGetChannelsApiUrl, logFile := buildUri("dfoGetContacts", inputData, logFile)
 	dfoContactSearchApiUrl, logFile := buildUri("dfoContactSearch", inputData, logFile)
 	dfoContactByIdApiUrl, logFile := buildUri("dfoContactById", inputData, logFile)
 	dmwGrpcApiUrl, logFile := buildUri("dmwGrpc", inputData, logFile)
@@ -131,13 +142,89 @@ func main() {
 		method := "getDfoAuthToken"
 		t := time.Now()
 
-		logMsg = fmt.Sprintf("begin api call: getDfoAuthToken\n")
+		logMsg = fmt.Sprintf("begin api call: %s\n", method)
 		logFile = createLog(logMsg, logFile)
 
-		dfoAuthTokenObj, logFile, err = getDfoAuthToken(dfoAuthTokenApiUrl, inputData, logFile)
+		dfoAuthTokenObj, err = getDfoAuthToken(dfoAuthTokenApiUrl, inputData)
 		if err != nil {
 			dfoAuthTokenObj.Error = err
+			logMsg = fmt.Sprintf("error calling [%s]: [%v]\n", method, err)
+			logFile = createLog(logMsg, logFile)
 
+			return
+		}
+		logMsg = fmt.Sprintf("[%s] dfo auth token successfully retrieved\n", method)
+		logFile = createLog(logMsg, logFile)
+		logMsg = fmt.Sprintf("[%s] - done, duration=%s\n", method, time.Since(t))
+		logFile = createLog(logMsg, logFile)
+	}()
+
+	// Get Service Token to call CxOne Apis
+	var token models.CxoneAuthTokenObj
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var err error
+		method := "getServiceToken"
+		t := time.Now()
+
+		logMsg = fmt.Sprintf("begin api call: %s\n", method)
+		logFile = createLog(logMsg, logFile)
+
+		token, logFile, err = getServiceToken(cxoneGetServiceTokenApiUrl, inputData, logFile)
+		if err != nil {
+			token.Error = err
+
+			logMsg = fmt.Sprintf("error calling [%s]: [%v]\n", method, err)
+			logFile = createLog(logMsg, logFile)
+
+			return
+		}
+		logMsg = fmt.Sprintf("[%s] - done, duration=%s\n", method, time.Since(t))
+		logFile = createLog(logMsg, logFile)
+	}()
+	wg.Wait()
+
+	// Get Tenant data
+	var tenantData models.TenantWrapper
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var err error
+		method := "getTenantData"
+		t := time.Now()
+
+		logMsg = fmt.Sprintf("begin api call: %s\n", method)
+		logFile = createLog(logMsg, logFile)
+
+		tenantData, logFile, err = getTenantData(cxoneGetTenantByIdApiUrl, inputData, token, logFile)
+		if err != nil {
+			tenantData.Error = err
+
+			logMsg = fmt.Sprintf("error calling [%s]: [%v]\n", method, err)
+			logFile = createLog(logMsg, logFile)
+
+			return
+		}
+		logMsg = fmt.Sprintf("[%s] - done, duration=%s\n", method, time.Since(t))
+		logFile = createLog(logMsg, logFile)
+	}()
+	wg.Wait()
+
+	// Get Channels
+	var channels []models.ChannelData
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var err error
+		method := "getChannels"
+		t := time.Now()
+
+		logMsg = fmt.Sprintf("begin api call: %s\n", method)
+		logFile = createLog(logMsg, logFile)
+
+		channels, logFile, err = getChannels(dfoGetChannelsApiUrl, inputData, dfoAuthTokenObj, logFile)
+		if err != nil {
 			logMsg = fmt.Sprintf("error calling [%s]: [%v]\n", method, err)
 			logFile = createLog(logMsg, logFile)
 
@@ -230,7 +317,7 @@ func main() {
 
 	// Batch and Process records to digimiddleware using gRPC
 	if len(deltaContacts.Contacts) > 0 {
-		logFile = process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, inputData, logFile)
+		logFile = process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, inputData, tenantData.Tenant, channels, logFile)
 	} else {
 		logMsg = fmt.Sprintf("comparison of lists returned 0 contacts to update - will not attempt to process updates")
 		logFile = createLog(logMsg, logFile)
@@ -242,47 +329,72 @@ func main() {
 	logFile = createLog(logMsg, logFile)
 
 	// Create output logFile file
-	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\Logs\\LOG_%s_%s_%d", inputData.Cluster, inputData.BusNo, time.Now().UnixNano())
+	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\Logs\\LOG_%s_%s_%d", tenantData.Tenant.ClusterId, tenantData.Tenant.BillingId, time.Now().UnixNano())
 
 	writeLogFile(".csv", filepath, logFile)
 }
 
 // process batches the data into specified batchSize to process
-func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl string, inputData InputDataObj, log []byte) []byte {
+func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl string, inputData InputDataObj, tenant models.Tenant, channels []models.ChannelData, log []byte) []byte {
 	batchCount := 1
 	var errList []models.DataView
 	var logMsg string
 	method := "processBatch"
 	method2 := "sendUpdateRecordsToMiddleware"
+	var mtx sync.Mutex
+	var processNotFound bool
 	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
+	var updateMessage *pbm.CaseUpdateEvent
+	var updatedRecords []*pbm.CaseUpdateEvent
 
-	for start, end := 0, 0; start <= len(data)-1; start = end {
+	if inputData.processNotFound == "yes" {
+		processNotFound = true
+	}
+
+	for start, end := 0, 0; start <= len(deltaContacts)-1; start = end {
 		var err error
 
 		end = start + batchSize
-		if end > len(data) {
-			end = len(data)
+		if end > len(deltaContacts) {
+			end = len(deltaContacts)
 		}
-		batch := data[start:end]
+		batch := deltaContacts[start:end]
 
 		t := time.Now()
 
 		logMsg = fmt.Sprintf("begin processing batch [%d]\n", batchCount)
 		log = createLog(logMsg, log)
 
-		sanitizedUpdateRecords, log, errList = processBatch(batch, dfoContactByIdApiUrl, dfoAuthTokenObj, inputData, log)
+		sanitizedUpdateRecords, log, errList = processBatch(batch, dfoContactByIdApiUrl, dfoAuthTokenObj, tenant, channels, log)
 
 		logMsg = fmt.Sprintf("[%s] [%d] - done, duration=%s, total records to update=%d\n", method, batchCount, time.Since(t), len(sanitizedUpdateRecords))
 		log = createLog(logMsg, log)
 
 		if errList != nil {
-			logMsg = fmt.Sprintf("ERROR processing batch - will not attempt to update below [%d] contacts\n", len(errList))
+			if processNotFound {
+				logMsg = fmt.Sprintf("ERROR processing batch - will attempt to create events for below [%d] contacts using data we know from dmw\n", len(errList))
+			} else {
+				logMsg = fmt.Sprintf("ERROR processing batch - will not attempt to process below [%d] contacts\n", len(errList))
+			}
 			log = createLog(logMsg, log)
 
 			// Range over errList to print all errors together for more readable logs
 			for _, e := range errList {
 				logMsg = fmt.Sprintln(e.Err)
 				log = createLog(logMsg, log)
+
+				if processNotFound {
+					// For contacts not found in DFO, attempt to build a CaseUpdate message with data we are aware of
+					updateMessage, err = processNotFoundEvent(deltaContacts, e, tenant, channels)
+					if err != nil || updateMessage == nil {
+						logMsg = fmt.Sprintf(err.Error())
+						log = createLog(logMsg, log)
+						break
+					}
+					mtx.Lock()
+					sanitizedUpdateRecords = append(sanitizedUpdateRecords, updateMessage)
+					mtx.Unlock()
+				}
 			}
 		}
 		batchCount++
@@ -294,7 +406,7 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 			log = createLog(logMsg, log)
 
 			t := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 5000*time.Millisecond)
 			log, err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
 				Updates:    sanitizedUpdateRecords,
 				ReceivedAt: timestamppb.Now(),
@@ -310,56 +422,51 @@ func process(data []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenO
 			cancel()
 			logMsg = fmt.Sprintf("[%s] - done, duration=%s, count=%d\n", method2, time.Since(t), len(sanitizedUpdateRecords))
 			log = createLog(logMsg, log)
+
+			mtx.Lock()
+			updatedRecords = append(updatedRecords, sanitizedUpdateRecords...)
+			mtx.Unlock()
 		} else {
 			logMsg = fmt.Sprintf("[%s] there were no contacts added to sanitizedUpdateRecords list - will not attempt to process updates\n", method)
 			log = createLog(logMsg, log)
 		}
 	}
 
-	// Create output file and print updated contacts to console
-	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\%s_%s_%d", inputData.Cluster, inputData.BusNo, time.Now().UnixNano())
-
-	mr, _ := json.Marshal(sanitizedUpdateRecords)
-
-	writeLogFile(".csv", filepath, mr)
-
-	for _, record := range sanitizedUpdateRecords {
+	// Range over updatedRecords to print all update record objects that were sent to dmw for update
+	for _, record := range updatedRecords {
 		logMsg = fmt.Sprintln(record)
 		log = createLog(logMsg, log)
 	}
+
+	// Create output file and print updated contacts to console
+	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\%s_%s_%d", tenant.ClusterId, tenant.BillingId, time.Now().UnixNano())
+
+	mr, _ := json.Marshal(updatedRecords)
+	writeLogFile(".csv", filepath, mr)
 
 	return log
 }
 
 // processBatch calls DFO 3.0 GET Contact to obtain contact data to build the case update event
-func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, i InputDataObj, log []byte) ([]*pbm.CaseUpdateEvent, []byte, []models.DataView) {
+func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, tenant models.Tenant, channels []models.ChannelData, log []byte) ([]*pbm.CaseUpdateEvent, []byte, []models.DataView) {
 	var errList []models.DataView
 	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
 	var wg sync.WaitGroup
 
 	for _, contact := range list {
 		wg.Add(1)
-		go func(contact models.DmwKnownContact, errList []models.DataView) {
+		go func(contact models.DmwKnownContact) {
 			defer wg.Done()
 			var contactData models.DataView
 			var l []byte
 			var mtx sync.Mutex
-			// Call DFO 3.0 GET Contacts by contactId for each record in Delta list to obtain actual metadata for contact
-			contactData, l = makeDfoContactByIdApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, contact, l)
+
+			// Call DFO api for each record in delta list to obtain actual metadata for contact
+			contactData, l = getDfoContactData(dfoContactByIdApiUrl, dfoAuthTokenObj, contact, l)
 
 			if contactData.Err == nil {
-				// Create the Update Event object from the contactData received from DFO
-				event := createEvent(contactData, i.TenantId, i.BusNo)
-
-				// Using the Event Object, create the CaseUpdateEvent object
-				updateMessage, err := makeCaseUpdate(event)
-				if err != nil {
-					contactData.Err = err
-					mtx.Lock()
-					errList = append(errList, contactData)
-					mtx.Unlock()
-					return
-				}
+				// Transform contact data into an updateMessage event to send to dmw gRPC
+				updateMessage := buildShipment(contactData, errList, tenant, channels)
 
 				if updateMessage != nil && contactData.Err == nil {
 					mtx.Lock()
@@ -372,13 +479,124 @@ func processBatch(list []models.DmwKnownContact, dfoContactByIdApiUrl string, df
 				errList = append(errList, contactData)
 				mtx.Unlock()
 			}
-		}(contact, errList)
+		}(contact)
 	}
 	wg.Wait()
 
 	return sanitizedUpdateRecords, log, errList
 }
 
+// buildShipment transforms the contact data into a case update event message
+func buildShipment(contactData models.DataView, errList []models.DataView, tenant models.Tenant, channels []models.ChannelData) *pbm.CaseUpdateEvent {
+	var mtx sync.Mutex
+
+	// Create the Update Event object from the contactData received from DFO
+	event := createEvent(contactData, tenant, channels)
+
+	// Using the Event Object, create the CaseUpdateEvent object
+	updateMessage, err := makeCaseUpdate(event)
+	if err != nil {
+		contactData.Err = err
+		mtx.Lock()
+		errList = append(errList, contactData)
+		mtx.Unlock()
+		return nil
+	}
+
+	return updateMessage
+}
+
+// processNotFoundEvent will build an event using fake data and push event to DMW to clean up the stuck contacts that were created with automation (not found in DFO)
+func processNotFoundEvent(deltaContacts []models.DmwKnownContact, notFoundContact models.DataView, tenant models.Tenant, channels []models.ChannelData) (*pbm.CaseUpdateEvent, error) {
+	b, _ := strconv.ParseInt(tenant.BillingId, 10, 32)
+	businessUnitNo := int32(b)
+	var channelIdOnExternalPlatform string
+	var channelIntegrationBoxIdentifier string
+	var channelIsPrivate bool
+	var channelName string
+	var channelRealExternalPlatformId string
+	var direction string
+	var event models.StreamEventRequest
+	var err error
+	method := "processNotFoundEvent"
+	randomGuid := uuid.New().String()
+	var recipients []models.Recipient
+	var updateMessage *pbm.CaseUpdateEvent
+
+	contactId, _ := strconv.ParseInt(notFoundContact.Id, 10, 64)
+
+	// Get data we know from the deltaContacts object
+	for _, dc := range deltaContacts {
+		if contactId == dc.ContactID {
+			// Convert the int to correct string direction
+			if dc.Direction == 0 {
+				direction = "outbound"
+			} else {
+				direction = "inbound"
+			}
+
+			// Range through channel list and populate the channel data
+			for _, channel := range channels {
+				if channel.ChannelId == dc.ChannelID {
+					channelIdOnExternalPlatform = channel.IdOnExternalPlatform
+					channelIntegrationBoxIdentifier = channel.IntegrationBoxIdent
+					channelIsPrivate = channel.IsPrivate
+					channelName = channel.Name
+					channelRealExternalPlatformId = channel.RealExternalPlatformId
+					break
+				}
+			}
+
+			// We are not able to obtain the exact contact data since these contacts do not exist in DFO so update with the data we are aware of
+			event.Data.Contact.ID = notFoundContact.Id
+			event.CreatedAt = dc.CurrentContactDate
+			event.EventID = uuid.New().String()
+			event.EventObject = models.EventObject_Case
+			event.EventType = 1        // TYPE_STATUS_CHANGED
+			event.Data.Brand.ID = 9999 // we don't use this so hardCode anything
+			event.Data.Brand.TenantID = tenant.TenantId
+			event.Data.Brand.BusinessUnitID = businessUnitNo
+			event.Data.Case.ID = dc.CaseIDString
+			event.Data.Case.ContactId = uuid.New().String()         // unknown
+			event.Data.Case.CustomerContactId = uuid.New().String() // unknown
+			event.Data.Case.DetailUrl = ""                          // unknown
+			event.Data.Case.EndUserRecipients = recipients          // unknown
+			event.Data.Case.InboxAssignee = 0                       // unknown
+			event.Data.Case.InteractionId = uuid.New().String()     // unknown
+			event.Data.Case.Direction = direction
+			event.Data.Case.ThreadId = uuid.New().String() // unknown
+			event.Data.Case.RoutingQueueId = dc.QueueID
+			event.Data.Case.RoutingQueuePriority = 1 // unknown
+			event.Data.Case.Status = "closed"        // hard-code to endContact
+			event.Data.Case.OwnerAssignee = 0        // unknown
+			event.Data.Channel.ID = dc.ChannelID
+			event.Data.Channel.Name = channelName
+			event.Data.Channel.IntegrationBoxIdentifier = channelIntegrationBoxIdentifier
+			event.Data.Channel.IDOnExternalPlatform = channelIdOnExternalPlatform
+			event.Data.Channel.IsPrivate = channelIsPrivate
+			event.Data.Channel.RealExternalPlatformID = channelRealExternalPlatformId
+			event.Data.Case.AuthorUser.ID = 0
+			event.Data.Case.AuthorUser.InContactID = ""
+			event.Data.Case.AuthorUser.EmailAddress = ""
+			event.Data.Case.AuthorUser.LoginUsername = ""
+			event.Data.Case.AuthorUser.FirstName = ""
+			event.Data.Case.AuthorUser.SurName = ""
+			event.Data.Case.AuthorEndUserIdentity.ID = "automation_" + randomGuid
+			event.Data.Case.AuthorEndUserIdentity.IdOnExternalPlatform = randomGuid
+			event.Data.Case.AuthorEndUserIdentity.FullName = "automation test "
+
+			updateMessage, err = makeCaseUpdate(event)
+			if err != nil || updateMessage == nil {
+				err = fmt.Errorf("[%s] unable to create case update event for contactId: [%s] - no further attempts to update contact will be made", method, event.Data.Contact.ID)
+			}
+			break
+		}
+	}
+
+	return updateMessage, err
+}
+
+// buildUri builds the uri for each api or grpc call needed
 func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 	uri := ""
 
@@ -386,6 +604,14 @@ func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 	log = createLog(logMsg, log)
 
 	switch apiType {
+	case "cxoneGetTenant":
+		uri = cxoneApiUrlPrefix + i.Region + "." + i.Env + cxoneApiPath + cxoneGetTenantByIdEndpoint
+		logMsg = fmt.Sprintln(uri)
+		log = createLog(logMsg, log)
+	case "cxoneGetToken":
+		uri = cxoneApiUrlPrefix + i.Region + "." + i.Env + cxoneApiPath + cxoneGetTokenEndpoint
+		logMsg = fmt.Sprintln(uri)
+		log = createLog(logMsg, log)
 	case "dmwGetStates":
 		uri = dmwApiUrlPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + dmwApiPort + dmwApiPath + dmwGetStatesEndpoint
 		logMsg = fmt.Sprintln(uri)
@@ -398,6 +624,19 @@ func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 			log = createLog(logMsg, log)
 		case "dev", "test", "staging":
 			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV2Path + dfoAuthTokenEndpoint
+			logMsg = fmt.Sprintln(uri)
+			log = createLog(logMsg, log)
+		default:
+			break
+		}
+	case "dfoGetContacts":
+		switch i.Env {
+		case "prod":
+			uri = dfoApiUrlPrefix + i.Region + dfoApiV3Path + dfoGetChannelsEndpoint
+			logMsg = fmt.Sprintln(uri)
+			log = createLog(logMsg, log)
+		case "dev", "test", "staging":
+			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV3Path + dfoGetChannelsEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		default:
@@ -485,12 +724,12 @@ func validateResponse(inputValue string, inputType string) bool {
 			fmt.Println("INPUT VALUE IS NOT A VALID ENVIRONMENT NAME: (\"dev\", \"test\", \"staging\", \"prod\")")
 			return false
 		}
-	case "cluster":
-		if len(inputValue) > 2 || len(inputValue) < 5 {
-			return true
-		} else {
-			fmt.Println("INPUT VALUE IS NOT THE PROPER STRING LENGTH")
+	case "accessKeyCreds":
+		if len(inputValue) != 56 {
+			fmt.Println("INPUT VALUE IS NOT THE PROPER STRING LENGTH (56)")
 			return false
+		} else {
+			return true
 		}
 	case "tenantId":
 		if _, err := uuid.Parse(inputValue); err != nil {
@@ -502,13 +741,6 @@ func validateResponse(inputValue string, inputType string) bool {
 	case "clientCreds":
 		if len(inputValue) != 45 {
 			fmt.Println("INPUT VALUE IS NOT THE PROPER STRING LENGTH (45)")
-			return false
-		} else {
-			return true
-		}
-	case "busNo":
-		if _, err := strconv.ParseInt(inputValue, 10, 32); err != nil {
-			fmt.Println("INPUT VALUE IS NOT A VALID BUSNO - SHOULD BE AN INTEGER")
 			return false
 		} else {
 			return true
@@ -525,12 +757,11 @@ func validateResponse(inputValue string, inputType string) bool {
 		} else {
 			return true
 		}
-	case "sortType":
-		switch strings.ToLower(inputValue) {
-		case "asc", "desc":
+	case "notFound":
+		if strings.ToLower(inputValue) == "yes" || inputValue == "" {
 			return true
-		default:
-			fmt.Println("INPUT VALUE IS NOT A VALID SORT TYPE: (\"asc\", \"desc\")")
+		} else {
+			fmt.Println("INPUT VALUE MUST BE BLANK OR \"YES\"")
 			return false
 		}
 	default:
@@ -538,37 +769,82 @@ func validateResponse(inputValue string, inputType string) bool {
 	}
 }
 
-// getDfoAuthToken calls the DFO api POST engager/2.0/token to get a bearer token for subsequent DFO api calls
-func getDfoAuthToken(apiUrl string, i InputDataObj, log []byte) (models.DfoAuthTokenObj, []byte, error) {
-	contentType := "application/json"
+// getServiceToken calls the CxOne API POST token/access-key using the T0 user accessKeyId and accessKeySecret and returns a service token for the env
+func getServiceToken(apiUrl string, i InputDataObj, log []byte) (models.CxoneAuthTokenObj, []byte, error) {
+	var logMsg string
+	method := "getServiceToken"
+	var cxoneServiceTokenBody models.CxoneAuthTokenBody
+	cxoneServiceTokenBody.AccessKeyId = i.AccessKeyId
+	cxoneServiceTokenBody.AccessKeySecret = i.AccessKeySecret
+	var tokenObj models.CxoneAuthTokenObj
+	var responseData []byte
+
+	bodyJson, _ := json.Marshal(cxoneServiceTokenBody)
+	reader := bytes.NewReader(bodyJson)
+
+	response, err := http.Post(apiUrl, contentType, reader)
+	if err != nil {
+		logMsg = fmt.Sprintf(err.Error())
+		log = createLog(logMsg, log)
+	}
+
+	if response != nil {
+		if response.StatusCode == 200 {
+			responseData, err = ioutil.ReadAll(response.Body)
+			if err != nil {
+				logMsg = fmt.Sprintf(err.Error())
+				log = createLog(logMsg, log)
+
+				return tokenObj, log, err
+			}
+		} else {
+			fmt.Printf(method+httpBadResponse, response.StatusCode, response.Status)
+		}
+	}
+
+	if responseData != nil {
+		err = json.Unmarshal(responseData, &tokenObj)
+		if err != nil {
+			logMsg = fmt.Sprintf("[%s] cannot unmarshal cxone service token: [%v]\n", method, err)
+			log = createLog(logMsg, log)
+
+			return tokenObj, log, err
+		}
+	} else {
+		logMsg = fmt.Sprintf("[%s] csone service token was null or empty\n", method)
+		log = createLog(logMsg, log)
+
+		return tokenObj, log, err
+	}
+
+	logMsg = fmt.Sprintf("[%s] cxone service token successfully retrieved\n", method)
+	log = createLog(logMsg, log)
+
+	return tokenObj, log, nil
+}
+
+// getDfoAuthToken calls the DFO api POST engager/2.0/token and returns the auth token for subsequent DFO api calls
+func getDfoAuthToken(apiUrl string, i InputDataObj) (models.DfoAuthTokenObj, error) {
 	var dfoAuthTokenBody models.DfoAuthTokenBody
 	dfoAuthTokenBody.GrantType = "client_credentials"
 	dfoAuthTokenBody.ClientId = i.ClientId
 	dfoAuthTokenBody.ClientSecret = i.ClientSecret
 	var dfoAuthTokenObj models.DfoAuthTokenObj
-	var logMsg string
 	method := "getDfoAuthToken"
+	var responseData []byte
 
 	bodyJson, _ := json.Marshal(dfoAuthTokenBody)
 	reader := bytes.NewReader(bodyJson)
-	var responseData []byte
 
 	response, err := http.Post(apiUrl, contentType, reader)
-
 	if err != nil {
-		logMsg = fmt.Sprintf(err.Error())
-		log = createLog(logMsg, log)
-
-		return dfoAuthTokenObj, log, err
+		return dfoAuthTokenObj, err
 	}
 
 	if response.StatusCode == 200 {
 		responseData, err = ioutil.ReadAll(response.Body)
 		if err != nil {
-			logMsg = fmt.Sprintf(err.Error())
-			log = createLog(logMsg, log)
-
-			return dfoAuthTokenObj, log, err
+			return dfoAuthTokenObj, err
 		}
 	} else {
 		fmt.Printf(method+httpBadResponse, response.StatusCode, response.Status)
@@ -577,31 +853,92 @@ func getDfoAuthToken(apiUrl string, i InputDataObj, log []byte) (models.DfoAuthT
 	if responseData != nil {
 		err = json.Unmarshal(responseData, &dfoAuthTokenObj)
 		if err != nil {
-			logMsg = fmt.Sprintf("[%s] cannot unmarshal dfo auth token: [%v]\n", method, err)
-			log = createLog(logMsg, log)
-
-			return dfoAuthTokenObj, log, err
+			err = fmt.Errorf("[%s] cannot unmarshal dfo auth token: [%v]\n", method, err)
+			return dfoAuthTokenObj, err
 		}
 	} else {
-		logMsg = fmt.Sprintf("[%s] dfo auth token was null or empty\n", method)
-		log = createLog(logMsg, log)
-
-		return dfoAuthTokenObj, log, err
+		return dfoAuthTokenObj, nil
 	}
 
-	logMsg = fmt.Sprintf("[%s] dfo auth token successfully retrieved\n", method)
+	return dfoAuthTokenObj, nil
+}
+
+// getTenantData calls the CxOne api GET tenant by tenantId and returns the Tenant object
+func getTenantData(cxoneGetTenantByIdApiUrl string, i InputDataObj, token models.CxoneAuthTokenObj, log []byte) (models.TenantWrapper, []byte, error) {
+	var logMsg string
+	method := "getTenantData"
+	var tenantObj models.TenantWrapper
+
+	if i.TenantId != "" {
+		cxoneGetTenantByIdApiUrl = cxoneGetTenantByIdApiUrl + i.TenantId
+	}
+
+	cxoneResponse, err := makeCxOneApiCall(cxoneGetTenantByIdApiUrl, token, i.TenantId)
+	if err != nil {
+		return tenantObj, log, err
+	}
+	if cxoneResponse != nil {
+		err = json.Unmarshal(cxoneResponse, &tenantObj)
+		if err != nil {
+			logMsg = fmt.Sprintf("[%s] received cxone response but unable to unmarshal object - error: [%s]\n", method, err)
+			log = createLog(logMsg, log)
+
+			return tenantObj, log, err
+		}
+	}
+
+	if tenantObj.Tenant.TenantId == "" {
+		logMsg = fmt.Sprintf("[%s] returned 0 records\n", method)
+		log = createLog(logMsg, log)
+
+		return tenantObj, log, err
+	}
+
+	logMsg = fmt.Sprintf("[%s] successfully returned tenant data for tenantId: [%s]\n", method, i.TenantId)
 	log = createLog(logMsg, log)
 
-	return dfoAuthTokenObj, log, err
+	return tenantObj, log, nil
+}
+
+// getChannels calls DFO v3.0 GET Channels and returns an array of all channel data
+func getChannels(dfoGetChannelsApiUrl string, i InputDataObj, dfoAuthTokenObj models.DfoAuthTokenObj, log []byte) ([]models.ChannelData, []byte, error) {
+	var dfoChannelsList []models.ChannelData
+	var logMsg string
+	method := "getChannels"
+
+	// Call DFO 3.0 GET Channels
+	dfoResponse, err := makeDfoApiCall(dfoGetChannelsApiUrl, dfoAuthTokenObj, "")
+	if err != nil {
+		return nil, log, err
+	}
+	if dfoResponse != nil {
+		err = json.Unmarshal(dfoResponse, &dfoChannelsList)
+		if err != nil {
+			logMsg = fmt.Sprintf("[%s] received dfo response but unable to unmarshal object - error: [%v]\n", method, err)
+			log = createLog(logMsg, log)
+
+			return nil, log, err
+		}
+	} else {
+		logMsg = fmt.Sprintf("[%s] returned 0 channels\n", method)
+
+		return nil, log, err
+	}
+
+	logMsg = fmt.Sprintf("[%s] returned [%v] total channels\n", method, len(dfoChannelsList))
+	log = createLog(logMsg, log)
+
+	sort.Sort(models.ChannelSort(dfoChannelsList))
+
+	return dfoChannelsList, log, err
 }
 
 // getDmwActiveContactStateData calls the Digimiddleware api POST digimiddleware/getstatesbytenants to get the list of contacts stored in DynamoDB
 func getDmwActiveContactStateData(apiUrl string, tenants [1]string, log []byte) (models.DmwKnownContacts, []byte, error) {
 	var dmwKnownContact models.DmwKnownContacts
-	contentType := "application/json"
 	var logMsg string
 	method := "getDmwActiveContactStateData"
-	var tenantIdsObj TenantIdsObj
+	var tenantIdsObj TenantIdsWrapper
 	tenantIdsObj.TenantIDs = tenants
 
 	bodyJson, _ := json.Marshal(tenantIdsObj)
@@ -639,9 +976,7 @@ func getDmwActiveContactStateData(apiUrl string, tenants [1]string, log []byte) 
 		}
 	}
 
-	sort.SliceStable(dmwKnownContact.Contacts, func(i, j int) bool {
-		return dmwKnownContact.Contacts[i].ContactID < dmwKnownContact.Contacts[j].ContactID
-	})
+	sort.Sort(models.DmwKnownContactSort(dmwKnownContact.Contacts))
 
 	return dmwKnownContact, log, err
 }
@@ -662,9 +997,7 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 	apiUrl.ScrollToken = "&scrollToken="
 	apiUrl.Sorting = "&sorting=createdAt"
 	apiUrl.SortingType = "&sortingType=asc"
-	if i.SortType == "" {
-		apiUrl.Url = dfoContactSearchApiUrl
-	} else if i.DateFrom == "" {
+	if i.DateFrom == "" {
 		apiUrl.Url = dfoContactSearchApiUrl
 	} else if i.DateTo == "" {
 		apiUrl.Url = dfoContactSearchApiUrl + apiUrl.DateFrom + apiUrl.Sorting + apiUrl.SortingType
@@ -735,15 +1068,14 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 			}
 		}
 	}
-	sort.SliceStable(dfoData, func(i, j int) bool {
-		return dfoData[i].Id < dfoData[j].Id
-	})
+
+	sort.Sort(models.DfoDataSort(dfoData))
 
 	return dfoData, log, nil
 }
 
 // buildDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
-func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfoData []models.DataView, log []byte) (models.DmwKnownContacts, []byte) {
+func buildDeltaList(inputData InputDataObj, dmwKnownContact models.DmwKnownContacts, dfoData []models.DataView, log []byte) (models.DmwKnownContacts, []byte) {
 	type DmwContacts []models.DmwKnownContact
 	deltaArray := DmwContacts{}
 	var deltaList models.DmwKnownContacts
@@ -755,6 +1087,7 @@ func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfo
 
 	// Loop through DmwKnownContact.Contacts and check each contact data in DfoActiveContacts to see if we find a match
 	for _, contact := range dmwKnownContact.Contacts {
+		convertedDate := time.Unix(contact.CurrentContactDate.Seconds, int64(contact.CurrentContactDate.Nanos)).UTC().Format(time.RFC3339)
 		found := false
 		shouldClose := false
 
@@ -767,14 +1100,14 @@ func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfo
 				matchesDateFilter := true
 
 				// If date filter was added, only check dmw known contacts between those dates
-				if i.DateFrom != "" && i.DateTo != "" {
-					if contact.CurrentContactDate <= i.DateFrom || contact.CurrentContactDate >= i.DateTo {
+				if inputData.DateFrom != "" {
+					if convertedDate <= inputData.DateFrom || convertedDate >= inputData.DateTo {
 						matchesDateFilter = false
 					}
-				}
 
-				if !matchesDateFilter {
-					break
+					if !matchesDateFilter {
+						break
+					}
 				}
 
 				if contact.ContactID == dataId {
@@ -789,7 +1122,7 @@ func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfo
 			if !found && shouldClose {
 				notFoundCount++
 
-				logMsg = fmt.Sprintf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, contact.CurrentContactDate)
+				logMsg = fmt.Sprintf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, convertedDate)
 				log = createLog(logMsg, log)
 			}
 		} else {
@@ -842,11 +1175,12 @@ func buildDeltaList(i InputDataObj, dmwKnownContact models.DmwKnownContacts, dfo
 	return deltaList, log
 }
 
-// makeDfoContactByIdApiCall calls makeDfoApiCall to get each contact data by contact id
-func makeDfoContactByIdApiCall(dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, contact models.DmwKnownContact, log []byte) (models.DataView, []byte) {
+// getDfoContactData calls makeDfoApiCall to get each contact data by contact id
+func getDfoContactData(dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, contact models.DmwKnownContact, log []byte) (models.DataView, []byte) {
 	var dfoClosedContactData models.DataView
 	var logMsg string
 
+	// Call DFO v3.0 GET contact by contactId
 	dfoResponse, respErr := makeDfoApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, strconv.Itoa(int(contact.ContactID)))
 	if respErr != nil {
 		dfoClosedContactData.Err = respErr
@@ -863,6 +1197,49 @@ func makeDfoContactByIdApiCall(dfoContactByIdApiUrl string, dfoAuthTokenObj mode
 	}
 
 	return dfoClosedContactData, log
+}
+
+// makeCxOneApiCall calls CxOne api GET tenant by tenantId and returns the tenant data object
+func makeCxOneApiCall(apiUrl string, token models.CxoneAuthTokenObj, tenantId string) ([]byte, error) {
+	var bearer = token.TokenType + " " + token.IdToken
+	client := &http.Client{}
+	method := "makeCxOneApiCall"
+	resp := &http.Response{}
+	var responseData []byte
+
+	// Create a new request using http
+	req, err := http.NewRequest("GET", apiUrl, nil)
+
+	if err != nil {
+		err = fmt.Errorf("[%s] attempt to create http.NewRequest returned an error: [%v]\n", method, err)
+		return responseData, err
+	}
+	if req != nil {
+		// add authorization header and content-type to the req
+		req.Header.Add("Authorization", bearer)
+		req.Header.Add("Content-Type", contentType)
+	}
+
+	// Send req using http Client
+	resp, err = client.Do(req)
+	if err != nil {
+		err = fmt.Errorf("[%s] error connecting to host\n[ERROR] - %v\n", method, err)
+		return responseData, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		responseData, err = ioutil.ReadAll(resp.Body)
+		if err != nil {
+			err = fmt.Errorf("[%s] error reading response bytes: %v\n", method, err)
+			return responseData, err
+		}
+	} else {
+		err = fmt.Errorf("[%s] error calling cxone api for tenant %s: %v", method, tenantId, resp.Status)
+		return responseData, err
+	}
+
+	return responseData, err
 }
 
 // makeDfoApiCall calls DFO 3.0 APIs and returns the response object
@@ -887,7 +1264,7 @@ func makeDfoApiCall(apiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, conta
 	if req != nil {
 		// add authorization header and content-type to the req
 		req.Header.Add("Authorization", bearer)
-		req.Header.Add("Content-Type", "application/json")
+		req.Header.Add("Content-Type", contentType)
 	}
 
 	// Send req using http Client
@@ -912,19 +1289,32 @@ func makeDfoApiCall(apiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, conta
 	return responseData, err
 }
 
-func createEvent(contactData models.DataView, tenantID, busNo string) models.StreamEventRequest {
-	b, _ := strconv.ParseInt(busNo, 10, 32)
+func createEvent(contactData models.DataView, tenant models.Tenant, channels []models.ChannelData) models.StreamEventRequest {
+	b, _ := strconv.ParseInt(tenant.BillingId, 10, 32)
 	businessUnitNo := int32(b)
+	var channelIdOnExternalPlatform string
+	var channelIntegrationBoxIdentifier string
+	var channelIsPrivate bool
+	var channelName string
+	var channelRealExternalPlatformId string
 	var event models.StreamEventRequest
 
-	channelParts := strings.Split(contactData.ChannelId, "_")
+	for _, channel := range channels {
+		if channel.ChannelId == contactData.ChannelId {
+			channelIdOnExternalPlatform = channel.IdOnExternalPlatform
+			channelIntegrationBoxIdentifier = channel.IntegrationBoxIdent
+			channelIsPrivate = channel.IsPrivate
+			channelName = channel.Name
+			channelRealExternalPlatformId = channel.RealExternalPlatformId
+		}
+	}
 
-	event.CreatedAt = contactData.CreatedAt
+	event.CreatedAt = contactData.StatusUpdatedAt
 	event.EventID = uuid.New().String()
 	event.EventObject = models.EventObject_Case
-	event.EventType = 1
+	event.EventType = 1        // TYPE_STATUS_CHANGED
 	event.Data.Brand.ID = 9999 // we don't use this so hardCode anything
-	event.Data.Brand.TenantID = tenantID
+	event.Data.Brand.TenantID = tenant.TenantId
 	event.Data.Brand.BusinessUnitID = businessUnitNo
 	event.Data.Case.ID = contactData.Id
 	event.Data.Case.ContactId = contactData.ContactGuid
@@ -940,11 +1330,20 @@ func createEvent(contactData models.DataView, tenantID, busNo string) models.Str
 	event.Data.Case.Status = contactData.Status
 	event.Data.Case.OwnerAssignee = contactData.OwnerAssignee
 	event.Data.Channel.ID = contactData.ChannelId
-	event.Data.Channel.Name = ""
-	event.Data.Channel.IntegrationBoxIdentifier = channelParts[0]
-	event.Data.Channel.IDOnExternalPlatform = channelParts[1]
-	event.Data.Channel.IsPrivate = true
-	event.Data.Channel.RealExternalPlatformID = channelParts[0]
+	event.Data.Channel.Name = channelName
+	event.Data.Channel.IntegrationBoxIdentifier = channelIntegrationBoxIdentifier
+	event.Data.Channel.IDOnExternalPlatform = channelIdOnExternalPlatform
+	event.Data.Channel.IsPrivate = channelIsPrivate
+	event.Data.Channel.RealExternalPlatformID = channelRealExternalPlatformId
+	event.Data.Case.AuthorUser.ID = contactData.InboxAssigneeUser.Id
+	event.Data.Case.AuthorUser.InContactID = contactData.InboxAssigneeUser.IncontactId
+	event.Data.Case.AuthorUser.EmailAddress = contactData.InboxAssigneeUser.EmailAddress
+	event.Data.Case.AuthorUser.LoginUsername = contactData.InboxAssigneeUser.LoginUsername
+	event.Data.Case.AuthorUser.FirstName = contactData.InboxAssigneeUser.FirstName
+	event.Data.Case.AuthorUser.SurName = contactData.InboxAssigneeUser.Surname
+	event.Data.Case.AuthorEndUserIdentity.ID = contactData.AuthorEndUserIdentity.Id
+	event.Data.Case.AuthorEndUserIdentity.IdOnExternalPlatform = contactData.AuthorEndUserIdentity.IdOnExternalPlatform
+	event.Data.Case.AuthorEndUserIdentity.FullName = contactData.AuthorEndUserIdentity.FullName
 
 	return event
 }
@@ -981,6 +1380,7 @@ func makeCaseUpdate(event models.StreamEventRequest) (*pbm.CaseUpdateEvent, erro
 	return &message, nil
 }
 
+// getCreatedAt converts a date time to a custom pb timestamp
 func getCreatedAt(event models.StreamEventRequest) (ts *timestamppb.Timestamp) {
 	if event.CreatedAtWithMilliseconds != nil {
 		return event.CreatedAtWithMilliseconds.Timestamp()
@@ -988,6 +1388,7 @@ func getCreatedAt(event models.StreamEventRequest) (ts *timestamppb.Timestamp) {
 	return event.CreatedAt.Timestamp()
 }
 
+// makeCase creates the streamEventRequest case message
 func makeCase(event models.StreamEventRequest) (caseEvent *pbm.Case) {
 	caseEvent = &pbm.Case{
 		ID:                   event.Data.Case.ID,
@@ -1030,7 +1431,7 @@ func makeCase(event models.StreamEventRequest) (caseEvent *pbm.Case) {
 	return caseEvent
 }
 
-// Turn the StreamEventRequest recipients list into the corresponding Recipients protobuf list.
+// recipientMap turns the StreamEventRequest recipients list into the corresponding Recipients protobuf list.
 func recipientMap(recipients []models.Recipient) []*pbm.Recipient {
 	results := make([]*pbm.Recipient, len(recipients))
 	for i, r := range recipients {
@@ -1044,6 +1445,7 @@ func recipientMap(recipients []models.Recipient) []*pbm.Recipient {
 	return results
 }
 
+// sendUpdateRecordsToMiddleware creates a gRPC client then pushes the createUpdateEvents to digimiddleware via gRPC
 func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEvents, dmwGrpcApiUrl string, log []byte) ([]byte, error) {
 	var logMsg string
 	method := "sendUpdateRecordsToMiddleware"
@@ -1080,24 +1482,24 @@ func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEv
 	logMsg = fmt.Sprintf("begin grpc call to update records in digimiddleware: [%s]\n", method3)
 	log = createLog(logMsg, log)
 
-	//response, err := middlewareEventService.CaseEventUpdate(ctx, events)
+	response, err := middlewareEventService.CaseEventUpdate(ctx, events)
 	logMsg = fmt.Sprintf("[%s] - done, duration=%s\n", method3, time.Since(t))
 	log = createLog(logMsg, log)
 
-	//if err != nil {
-	//	// Failure to deliver to Middleware (e.g., network errors, etc.)
-	//	logMsg = fmt.Sprintln(err.Error())
-	//  log = createLog(logMsg, log)
-	//}
+	if err != nil {
+		// Failure to deliver to Middleware (e.g., network errors, etc.)
+		logMsg = fmt.Sprintln(err.Error())
+		log = createLog(logMsg, log)
+	}
 
 	// If we got an error response, then the Middleware indicates this is retryable. Return an error here.
-	//errStr := response.GetErr()
-	//if errStr != "" {
-	//	logMsg = fmt.Sprintf("[%s] received error from case update grpc: [%v]\n", method3, errStr)
-	//  log = createLog(logMsg, log)
-	//
-	//	return log, nil
-	//}
+	errStr := response.GetErr()
+	if errStr != "" {
+		logMsg = fmt.Sprintf("[%s] received error from case update grpc: [%v]\n", method3, errStr)
+		log = createLog(logMsg, log)
+
+		return log, nil
+	}
 
 	logMsg = fmt.Sprintf("[%s] wrote case update records to grpc - records count: [%v]\n", method3, len(events.Updates))
 	log = createLog(logMsg, log)
@@ -1105,6 +1507,7 @@ func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEv
 	return log, nil
 }
 
+// createCrpcClient creates the client needed to make gRPC calls to digimiddleware
 func createGrpcClient(dmwGrpcApiUrl string, log []byte) (digiservice.GrpcService, []byte) {
 	digimiddlewareGrpcAddr := dmwGrpcApiUrl
 	var logMsg string

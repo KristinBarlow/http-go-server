@@ -16,7 +16,7 @@ type DataView struct {
 	ContactGuid                 string                        `json:"contactId,omitempty"`
 	CustomerContactId           string                        `json:"customerContactId,omitempty"`
 	Status                      string                        `json:"status"`
-	StatusUpdatedAt             string                        `json:"statusUpdatedAt"`
+	StatusUpdatedAt             *CustomTimestamp              `json:"statusUpdatedAt"`
 	RoutingQueueId              string                        `json:"routingQueueId"`
 	RoutingQueuePriority        int32                         `json:"routingQueuePriority"`
 	InboxAssignee               int64                         `json:"inboxAssignee,omitempty"`
@@ -42,7 +42,7 @@ type DataView struct {
 }
 
 type DataInboxAssigneeUserView struct {
-	Id            int32  `json:"id,omitempty"`
+	Id            int64  `json:"id,omitempty"`
 	IncontactId   string `json:"incontactId,omitempty"`
 	EmailAddress  string `json:"emailAddress,omitempty"`
 	LoginUsername string `json:"loginUsername,omitempty"`
@@ -178,22 +178,12 @@ type DataIdentitiesView struct {
 	EndUserId                   string `json:"id,omitempty"`
 }
 
-func (d DfoContactSearchResponse) ResponseHits() int32 {
-	return d.Hits
+// DfoData sorts by ContactId
+type DfoDataSort []DataView
+
+func (a DfoDataSort) Len() int { return len(a) }
+func (a DfoDataSort) Less(i, j int) bool {
+	return a[i].Id < a[j].Id
 }
 
-func (d DfoContactSearchResponse) ResponseData() []DataView {
-	return d.Data
-}
-
-func (d DfoContactSearchResponse) ResponseScrollToken() string {
-	return d.ScrollToken
-}
-
-func NewDfoData(hits int32, data []DataView, scrollToken string) DfoContactSearchResponse {
-	return DfoContactSearchResponse{
-		Hits:        hits,
-		Data:        data,
-		ScrollToken: scrollToken,
-	}
-}
+func (a DfoDataSort) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
