@@ -129,55 +129,21 @@ func main() {
 	var wg sync.WaitGroup
 
 	//Prompt for needed input data
-	//inputData.Region = promptForInputData("region", regionRequest)
-	//inputData.Region = strings.ToLower(inputData.Region)
-	//inputData.Env = promptForInputData("env", envRequest)
-	//inputData.Env = strings.ToLower(inputData.Env)
-	//inputData.AccessKeyId = promptForInputData("accessKeyCreds", accessKeyIdRequest)
-	//inputData.AccessKeySecret = promptForInputData("accessKeyCreds", accessKeySecretRequest)
-	//inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
-	//inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
-	//inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
-	//inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
-	//if inputData.DateFrom != "" {
-	//	inputData.DateTo = promptForInputData("dateTo", dateToRequest)
-	//}
-	//inputData.processNotFound = promptForInputData("notFound", notFoundFlag)
-	//inputData.processNotFound = strings.ToLower(inputData.processNotFound)
-
-	// This section used for debugging.  Comment out prompts above and uncomment below to fill in data.
-	//DO98, 4534531
-	//inputData.Region = "na1"
-	//inputData.Env = "dev"
-	//inputData.AccessKeyId = "2OB4PGVVVPVGRLA3RZT2UO3QR5DEVHBPTAXA7FYPCRTP5IRI4XJA===="
-	//inputData.AccessKeySecret = "FM6NX74B7YOKPOBG3IJMYXTGBFODM6QC4D6TXGYJLOB4CYCZUANA===="
-	//inputData.TenantId = "11EA8B00-FE26-D4C0-8B66-0242AC110005"
-	//inputData.ClientId = "hZtufP76V4QKcWogRiaFHVQx1XGspDPFamH78P8n1xQqt"
-	//inputData.ClientSecret = "SdrPoz7hj0GoEvxwDZweiK21jRBRUNFEfIhlrEKaSBK2t"
-	//inputData.DateFrom = "2020-08-21" // This BU has bad data prior to 8/21/2020 - api will return 500 internal server error
-	//inputData.DateTo = "2022-09-22"
-	//inputData.processNotFound = "yes"
-
-	// Automation BU DO74, 15573
-	inputData.Region = "na1"
-	inputData.Env = "dev"
-	inputData.AccessKeyId = "2OB4PGVVVPVGRLA3RZT2UO3QR5DEVHBPTAXA7FYPCRTP5IRI4XJA===="
-	inputData.AccessKeySecret = "FM6NX74B7YOKPOBG3IJMYXTGBFODM6QC4D6TXGYJLOB4CYCZUANA===="
-	inputData.TenantId = "11eb5204-ec4d-a370-a1ba-0242ac110002"
-	inputData.ClientId = "i7ZnwBxZ5d5iSgb9EumUYx6I07ZsShyt2lQGKyVLPbMAF"
-	inputData.ClientSecret = "00eUgcwMlv3IXd2MacYXsgtyXg4PXx8VdGo3NeRbMrlm3"
-	inputData.DateFrom = ""
-	inputData.DateTo = ""
-	inputData.processNotFound = "yes"
-
-	// Whoop inc C46, 4601917
-	//inputData.Region = "na1"
-	//inputData.Env = "prod"
-	//inputData.TenantId = "11EBB1B9-B4CE-30D0-87C1-0242AC110003"
-	//inputData.ClientId = "ui3GUEtWPXr6E3WhyKDmknIWwlq3XCBJsKIAho4rXu5eO"
-	//inputData.ClientSecret = "spElVWAzX6HTIC8RJtdhNpGW50rsj71I95ba7mzjMMq0Y"
-	//inputData.DateFrom = ""
-	//inputData.DateTo = ""
+	inputData.Region = promptForInputData("region", regionRequest)
+	inputData.Region = strings.ToLower(inputData.Region)
+	inputData.Env = promptForInputData("env", envRequest)
+	inputData.Env = strings.ToLower(inputData.Env)
+	inputData.AccessKeyId = promptForInputData("accessKeyCreds", accessKeyIdRequest)
+	inputData.AccessKeySecret = promptForInputData("accessKeyCreds", accessKeySecretRequest)
+	inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
+	inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
+	inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
+	inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
+	if inputData.DateFrom != "" {
+		inputData.DateTo = promptForInputData("dateTo", dateToRequest)
+	}
+	inputData.processNotFound = promptForInputData("notFound", notFoundFlag)
+	inputData.processNotFound = strings.ToLower(inputData.processNotFound)
 
 	// Build api and gRPC URIs
 	cxoneGetServiceTokenApiUrl, logFile := buildUri("cxoneGetToken", inputData, logFile)
@@ -1454,22 +1420,22 @@ func recipientMap(recipients []models.Recipient) []*pbm.Recipient {
 // sendUpdateRecordsToMiddleware creates a gRPC client then pushes the createUpdateEvents to digimiddleware via gRPC
 func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEvents, dmwGrpcApiUrl string, log []byte) ([]byte, error) {
 	var logMsg string
-	//var response *pbm.CaseResponse
+	var response *pbm.CaseResponse
 
 	// Create gRPC client to pass CaseEventUpdate to digimiddleware
 	logMsg = fmt.Sprintf("begin create grpc client: [%s]\n", createGrpcClientOp)
 	log = createLog(logMsg, log)
 
 	t := time.Now()
-	//middlewareEventService, err := createGrpcClient(dmwGrpcApiUrl)
-	//if err != nil {
-	//	return log, err
-	//}
+	middlewareEventService, err := createGrpcClient(dmwGrpcApiUrl)
+	if err != nil {
+		return log, err
+	}
 
-	//if middlewareEventService == nil {
-	//	err = fmt.Errorf("[%s] error creating middlewareEventService, error: %v", createGrpcClientOp, err)
-	//	return log, err
-	//}
+	if middlewareEventService == nil {
+		err = fmt.Errorf("[%s] error creating middlewareEventService, error: %v", createGrpcClientOp, err)
+		return log, err
+	}
 
 	logMsg = fmt.Sprintf("[%s] - grpc client initialized, duration=%s\n", createGrpcClientOp, time.Since(t))
 	log = createLog(logMsg, log)
@@ -1479,17 +1445,17 @@ func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEv
 	log = createLog(logMsg, log)
 
 	t = time.Now()
-	//response, err = middlewareEventService.CaseEventUpdate(ctx, events)
-	//if err != nil {
-	//	// Failure to deliver to Middleware (e.g., network errors, etc.)
-	//	return log, err
-	//}
-	// If we got an error response, then the Middleware indicates this is retryable. Return an error here.
-	//errStr := response.GetErr()
-	//if errStr != "" {
-	//	err = fmt.Errorf("[%s] received error from case update grpc: [%v]\n", caseEventUpdateOp, errStr)
-	//	return log, err
-	//}
+	response, err = middlewareEventService.CaseEventUpdate(ctx, events)
+	if err != nil {
+		// Failure to deliver to Middleware (e.g., network errors, etc.)
+		return log, err
+	}
+
+	errStr := response.GetErr()
+	if errStr != "" {
+		err = fmt.Errorf("[%s] received error from case update grpc: [%v]\n", caseEventUpdateOp, errStr)
+		return log, err
+	}
 
 	logMsg = fmt.Sprintf("[%s] wrote case update records to grpc - records count: [%d], duration=%s\n", caseEventUpdateOp, len(events.Updates), time.Since(t))
 	log = createLog(logMsg, log)
