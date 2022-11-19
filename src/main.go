@@ -32,6 +32,7 @@ const (
 	// CxOne api url path variables
 	cxoneApiUrlPrefix          = "https://"
 	cxoneApiPath               = ".nice-incontact.com/"
+	cxoneApiPathNoDash         = ".niceincontact.com/"
 	cxoneGetTenantByIdEndpoint = "tenants/id/"
 	cxoneGetTokenEndpoint      = "authentication/v1/token/access-key"
 
@@ -201,50 +202,62 @@ func main() {
 
 	// Get Tenant data
 	var tenantData models.TenantWrapper
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var err error
-		t := time.Now()
+	if token.Error == nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			t := time.Now()
 
-		logMsg = fmt.Sprintf("begin api call: %s\n", getTenantDataOp)
+			logMsg = fmt.Sprintf("begin api call: %s\n", getTenantDataOp)
+			logFile = createLog(logMsg, logFile)
+
+			if token.Error == nil {
+				tenantData, err = getTenantData(cxoneGetTenantByIdApiUrl, inputData, token)
+				if err != nil {
+					tenantData.Error = err
+					logMsg = fmt.Sprintf(err.Error())
+					logFile = createLog(logMsg, logFile)
+					return
+				}
+				logMsg = fmt.Sprintf("[%s] successfully returned tenant data for tenantId: [%s], duration=%s\n", getTenantDataOp, inputData.TenantId, time.Since(t))
+				logFile = createLog(logMsg, logFile)
+			}
+		}()
+		wg.Wait()
+	} else {
+		logMsg = fmt.Sprintf("unable to get service token to make cxone api calls to %s - terminating service", getTenantDataOp)
 		logFile = createLog(logMsg, logFile)
+		return
+	}
 
-		if token.Error == nil {
-			tenantData, err = getTenantData(cxoneGetTenantByIdApiUrl, inputData, token)
+	// Get Channels
+	var channels []models.ChannelData
+	if dfoAuthTokenObj.Error == nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			t := time.Now()
+
+			logMsg = fmt.Sprintf("begin api call: %s\n", getChannelsOp)
+			logFile = createLog(logMsg, logFile)
+
+			channels, err = getChannels(dfoGetChannelsApiUrl, dfoAuthTokenObj)
 			if err != nil {
-				tenantData.Error = err
 				logMsg = fmt.Sprintf(err.Error())
 				logFile = createLog(logMsg, logFile)
 				return
 			}
-			logMsg = fmt.Sprintf("[%s] successfully returned tenant data for tenantId: [%s], duration=%s\n", getTenantDataOp, inputData.TenantId, time.Since(t))
+			logMsg = fmt.Sprintf("[%s] returned [%v] total channels, duration=%s\n", getChannelsOp, len(channels), time.Since(t))
 			logFile = createLog(logMsg, logFile)
-		}
-	}()
-	wg.Wait()
-
-	// Get Channels
-	var channels []models.ChannelData
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var err error
-		t := time.Now()
-
-		logMsg = fmt.Sprintf("begin api call: %s\n", getChannelsOp)
+		}()
+		wg.Wait()
+	} else {
+		logMsg = fmt.Sprintf("unable to get dfo auth token to make dfo api calls to %s - terminating service", getChannelsOp)
 		logFile = createLog(logMsg, logFile)
-
-		channels, err = getChannels(dfoGetChannelsApiUrl, dfoAuthTokenObj)
-		if err != nil {
-			logMsg = fmt.Sprintf(err.Error())
-			logFile = createLog(logMsg, logFile)
-			return
-		}
-		logMsg = fmt.Sprintf("[%s] returned [%v] total channels, duration=%s\n", getChannelsOp, len(channels), time.Since(t))
-		logFile = createLog(logMsg, logFile)
-	}()
-	wg.Wait()
+		return
+	}
 
 	// Get list of Digimiddleware known active contacts
 	if dfoAuthTokenObj.Error == nil {
@@ -293,6 +306,10 @@ func main() {
 			logFile = createLog(logMsg, logFile)
 		}()
 		wg.Wait()
+	} else {
+		logMsg = fmt.Sprintf("unable to get dfo auth token to make dfo api calls to %s - terminating service", makeDfoContactSearchApiCallOp)
+		logFile = createLog(logMsg, logFile)
+		return
 	}
 
 	// Compare lists to get the contacts that exist in DMW but are closed in DFO.
@@ -425,13 +442,14 @@ func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoA
 
 			t := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), 5000*time.Millisecond)
+
 			log, err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
 				Updates:    sanitizedUpdateRecords,
 				ReceivedAt: timestamppb.Now(),
 			}, dmwGrpcApiUrl, log)
 
 			if err != nil {
-				logMsg = fmt.Sprintf(err.Error())
+				logMsg = fmt.Sprintln(err.Error())
 				log = createLog(logMsg, log)
 				cancel()
 				return log
@@ -615,19 +633,54 @@ func processNotFoundEvent(deltaContacts []models.DmwKnownContact, notFoundContac
 // buildUri builds the uri for each api or grpc call needed
 func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 	uri := ""
-
 	logMsg := fmt.Sprintf("%s uri for requested region [%s] and env [%s] -- ", apiType, i.Region, i.Env)
 	log = createLog(logMsg, log)
 
 	switch apiType {
 	case "cxoneGetTenant":
-		uri = cxoneApiUrlPrefix + i.Region + "." + i.Env + cxoneApiPath + cxoneGetTenantByIdEndpoint
-		logMsg = fmt.Sprintln(uri)
-		log = createLog(logMsg, log)
+		switch i.Env {
+		case "prod":
+			switch i.Region {
+			case "na1", "au1":
+				uri = cxoneApiUrlPrefix + i.Region + cxoneApiPath + cxoneGetTenantByIdEndpoint
+				logMsg = fmt.Sprintln(uri)
+				log = createLog(logMsg, log)
+			case "eu1", "jp1", "uk1", "ca1":
+				uri = cxoneApiUrlPrefix + i.Region + cxoneApiPathNoDash + cxoneGetTenantByIdEndpoint
+				logMsg = fmt.Sprintln(uri)
+				log = createLog(logMsg, log)
+			default:
+				break
+			}
+		case "dev", "test", "staging":
+			uri = cxoneApiUrlPrefix + i.Region + "." + i.Env + cxoneApiPath + cxoneGetTenantByIdEndpoint
+			logMsg = fmt.Sprintln(uri)
+			log = createLog(logMsg, log)
+		default:
+			break
+		}
 	case "cxoneGetToken":
-		uri = cxoneApiUrlPrefix + i.Region + "." + i.Env + cxoneApiPath + cxoneGetTokenEndpoint
-		logMsg = fmt.Sprintln(uri)
-		log = createLog(logMsg, log)
+		switch i.Env {
+		case "prod":
+			switch i.Region {
+			case "na1", "au1":
+				uri = cxoneApiUrlPrefix + i.Region + cxoneApiPath + cxoneGetTokenEndpoint
+				logMsg = fmt.Sprintln(uri)
+				log = createLog(logMsg, log)
+			case "eu1", "jp1", "uk1", "ca1":
+				uri = cxoneApiUrlPrefix + i.Region + cxoneApiPathNoDash + cxoneGetTokenEndpoint
+				logMsg = fmt.Sprintln(uri)
+				log = createLog(logMsg, log)
+			default:
+				break
+			}
+		case "dev", "test", "staging":
+			uri = cxoneApiUrlPrefix + i.Region + "." + i.Env + cxoneApiPath + cxoneGetTokenEndpoint
+			logMsg = fmt.Sprintln(uri)
+			log = createLog(logMsg, log)
+		default:
+			break
+		}
 	case "dmwGetStates":
 		uri = dmwApiUrlPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + dmwApiPort + dmwApiPath + dmwGetStatesEndpoint
 		logMsg = fmt.Sprintln(uri)
