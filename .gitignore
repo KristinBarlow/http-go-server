@@ -1,8 +1,19 @@
 # Default ignored files
 /shelf/
-/workspace.xml
+/.idea/workspace.xml
 # Datasource local storage ignored files
 /../../../../../../../../../:\Users\kristin.barlow\go\src\github.com\MyGoProjects\http-go-server\.idea/dataSources/
 /dataSources.local.xml
 # Editor-based HTTP Client requests
 /httpRequests/
+
+*.terraform
+.terraform.lock.hcl
+*.tfstate
+*node_modules
+*.log
+.serverless
+.webpack
+.DS_Store
+.idea/
+.vs/
