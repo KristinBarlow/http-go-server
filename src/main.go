@@ -441,7 +441,7 @@ func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoA
 			log = createLog(logMsg, log)
 
 			t := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), 5000*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 50000*time.Millisecond)
 
 			log, err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
 				Updates:    sanitizedUpdateRecords,
