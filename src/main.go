@@ -131,34 +131,21 @@ func main() {
 	var wg sync.WaitGroup
 
 	//Prompt for needed input data
-	//inputData.Region = promptForInputData("region", regionRequest)
-	//inputData.Region = strings.ToLower(inputData.Region)
-	//inputData.Env = promptForInputData("env", envRequest)
-	//inputData.Env = strings.ToLower(inputData.Env)
-	//inputData.AccessKeyId = promptForInputData("accessKeyCreds", accessKeyIdRequest)
-	//inputData.AccessKeySecret = promptForInputData("accessKeyCreds", accessKeySecretRequest)
-	//inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
-	//inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
-	//inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
-	//inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
-	//if inputData.DateFrom != "" {
-	//	inputData.DateTo = promptForInputData("dateTo", dateToRequest)
-	//}
-	//inputData.processNotFound = promptForInputData("notFound", notFoundFlag)
-	//inputData.processNotFound = strings.ToLower(inputData.processNotFound)
-
-	// RINGCENTRAL CC SE1 B32 OSH, B32, 4601057 - Cleared stuck contacts 11/23/2022, 1/3/2023 (19 new)
-	// DataLake team reported this one DE-39249 - they are missing the contact closed and also the agentContactEnded events on some of the contacts. Cannot reproduce and no new examples since 7/6/22 & 8/24/22 (11/23/22)
-	inputData.Region = "na1"
-	inputData.Env = "prod"
-	inputData.AccessKeyId = "4PKH5PLDNLTJQDKQK75Z6FPWFJWFSD3HKDCPZP5LUVGLAVR5BGVA===="
-	inputData.AccessKeySecret = "LS36GM74HEHCLEHUFQNRMUEXYMPINMOTQVOUERTCKY7Q5QHBF6KA===="
-	inputData.TenantId = "11EB504C-7436-8A00-9847-0242AC110002"
-	inputData.ClientId = "7KofFLrYYziS4zBPFPQ2PaqVuYKoBaM4NvCupgis0Yr0Y"
-	inputData.ClientSecret = "ILXni1BON0jc7WjrqJe1ykhvVhFigrS07RqJjFxF0OG0t"
-	inputData.DateFrom = ""
-	inputData.DateTo = ""
-	inputData.processNotFound = ""
+	inputData.Region = promptForInputData("region", regionRequest)
+	inputData.Region = strings.ToLower(inputData.Region)
+	inputData.Env = promptForInputData("env", envRequest)
+	inputData.Env = strings.ToLower(inputData.Env)
+	inputData.AccessKeyId = promptForInputData("accessKeyCreds", accessKeyIdRequest)
+	inputData.AccessKeySecret = promptForInputData("accessKeyCreds", accessKeySecretRequest)
+	inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
+	inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
+	inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
+	inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
+	if inputData.DateFrom != "" {
+		inputData.DateTo = promptForInputData("dateTo", dateToRequest)
+	}
+	inputData.processNotFound = promptForInputData("notFound", notFoundFlag)
+	inputData.processNotFound = strings.ToLower(inputData.processNotFound)
 
 	// Build api and gRPC URIs
 	cxoneGetServiceTokenApiUrl, logFile := buildUri("cxoneGetToken", inputData, logFile)
