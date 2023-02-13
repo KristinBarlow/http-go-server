@@ -68,7 +68,6 @@ const (
 	makeCxOneApiCallOp              = "makeCxOneApiCall"
 	makeDfoApiCallOp                = "makeDfoApiCall"
 	makeDfoContactSearchApiCallOp   = "makeDfoContactSearchApiCall"
-	makeDmwApiCallOp                = "makeDmwApiCall"
 	processBatchOp                  = "processBatch"
 	processNotFoundEventOp          = "processNotFoundEvent"
 	sendUpdateRecordsToMiddlewareOp = "sendUpdateRecordsToMiddleware"
@@ -1231,46 +1230,6 @@ func getDfoContactData(dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAu
 	}
 
 	return dfoClosedContactData, log
-}
-
-// makeCxOneApiCall calls CxOne api GET tenant by tenantId and returns the tenant data object
-func makeDmwApiCall(apiUrl string, tenantId string, method string) ([]byte, error) {
-	client := &http.Client{}
-	resp := &http.Response{}
-	var responseData []byte
-
-	// Create a new request using http
-	req, err := http.NewRequest(method, apiUrl, nil)
-	if err != nil {
-		err = fmt.Errorf("[%s] attempt to create http.NewRequest returned an error: [%v]\n", makeDmwApiCallOp, err)
-		return responseData, err
-	}
-	if req != nil {
-		// add header to the req
-		req.Header.Add("Content-Type", "application/json")
-		req.Header.Add("Content-Type", "text/html")
-	}
-
-	// Send req using http Client
-	resp, err = client.Do(req)
-	if err != nil {
-		err = fmt.Errorf("[%s] error connecting to host\n[ERROR] - %v\n", makeDmwApiCallOp, err)
-		return responseData, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 200 {
-		responseData, err = ioutil.ReadAll(resp.Body)
-		if err != nil {
-			err = fmt.Errorf("[%s] error reading response bytes: %v\n", makeDmwApiCallOp, err)
-			return responseData, err
-		}
-	} else {
-		err = fmt.Errorf("[%s] error calling cxone api for tenant %s: %v", makeDmwApiCallOp, tenantId, resp.Status)
-		return responseData, err
-	}
-
-	return responseData, err
 }
 
 // makeCxOneApiCall calls CxOne api GET tenant by tenantId and returns the tenant data object
