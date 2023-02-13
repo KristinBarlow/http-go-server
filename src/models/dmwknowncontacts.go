@@ -7,18 +7,19 @@ type DmwKnownContacts struct {
 
 type DmwKnownContact struct {
 	ContactID                   int64            `json:"ContactID"`
-	MasterContactID             int64            `json:"MasterContactID"`
+	MasterContactID             int64            `json:"MasterContactID,omitempty"`
 	TenantID                    string           `json:"TenantID"`
 	QueueID                     string           `json:"QueueID,omitempty"`
 	StartDate                   string           `json:"StartDate"`
-	FromAddr                    string           `json:"FromAddr"`
+	ToAddr                      string           `json:"ToAddr,omitempty"`
+	FromAddr                    string           `json:"FromAddr,omitempty"`
 	CurrentContactState         int32            `json:"CurrentContactState"`
 	CurrentContactDate          *CustomTimestamp `json:"CurrentContactDate"`
 	Direction                   int32            `json:"Direction"`
 	ChannelID                   string           `json:"ChannelID"`
 	StateIndex                  int32            `json:"StateIndex"`
 	CaseIDString                string           `json:"CaseIDString"`
-	DigitalContactState         int32            `json:"DigitalContactState"`
+	DigitalContactState         int32            `json:"DigitalContactState,omitempty"`
 	PreviousQueueID             string           `json:"PreviousQueueID,omitempty"`
 	PreviousAgentUserID         string           `json:"PreviousAgentUserID,omitempty"`
 	PreviousContactState        int32            `json:"PreviousContactState,omitempty"`
