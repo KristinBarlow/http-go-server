@@ -441,7 +441,7 @@ func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoA
 			log = createLog(logMsg, log)
 
 			t := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), 50000*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 500000*time.Millisecond)
 
 			log, err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
 				Updates:    sanitizedUpdateRecords,
@@ -938,7 +938,7 @@ func getTenantData(cxoneGetTenantByIdApiUrl string, i InputDataObj, token models
 		return tenantObj, err
 	}
 
-	cxoneResponse, err = makeCxOneApiCall(cxoneGetTenantByIdApiUrl, token, i.TenantId)
+	cxoneResponse, err = makeCxOneApiCall(cxoneGetTenantByIdApiUrl, token, i.TenantId, "GET")
 	if err != nil {
 		return tenantObj, err
 	}
@@ -958,7 +958,7 @@ func getChannels(dfoGetChannelsApiUrl string, dfoAuthTokenObj models.DfoAuthToke
 	var dfoChannelsList []models.ChannelData
 
 	// Call DFO 3.0 GET Channels
-	dfoResponse, err := makeDfoApiCall(dfoGetChannelsApiUrl, dfoAuthTokenObj, "")
+	dfoResponse, err := makeDfoApiCall(dfoGetChannelsApiUrl, dfoAuthTokenObj, "GET", "")
 	if err != nil {
 		return nil, err
 	}
@@ -982,10 +982,10 @@ func getDmwActiveContactStateData(apiUrl string, tenants [1]string) (models.DmwK
 	var dmwKnownContact models.DmwKnownContacts
 	var tenantIdsObj TenantIdsWrapper
 	tenantIdsObj.TenantIDs = tenants
+	var responseData []byte
 
 	bodyJson, _ := json.Marshal(tenantIdsObj)
 	reader := bytes.NewReader(bodyJson)
-	var responseData []byte
 
 	response, err := http.Post(apiUrl, contentType, reader)
 	if err != nil {
@@ -1040,7 +1040,7 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 	}
 
 	// Call DFO 3.0 GET Contact Search which returns 1st 25 records
-	dfoResponse, err := makeDfoApiCall(apiUrl.Url, dfoAuthTokenObj, "")
+	dfoResponse, err := makeDfoApiCall(apiUrl.Url, dfoAuthTokenObj, "GET", "")
 	if err != nil {
 		return nil, log, err
 	}
@@ -1079,7 +1079,7 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 			log = createLog(logMsg, log)
 
 			apiUrl.Url = dfoContactSearchApiUrl + apiUrl.ScrollToken + dfoActiveContactList.ScrollToken
-			dfoResponse, err = makeDfoApiCall(apiUrl.Url, dfoAuthTokenObj, "")
+			dfoResponse, err = makeDfoApiCall(apiUrl.Url, dfoAuthTokenObj, "GET", "")
 			if err != nil {
 				return nil, log, err
 			}
@@ -1122,30 +1122,34 @@ func buildDeltaList(inputData InputDataObj, dmwKnownContact models.DmwKnownConta
 
 		// Only compare contact with DFO data if contact is not closed (18)
 		if contact.CurrentContactState != 18 {
-			// Compare the data from DFO with the DMW data
-			for _, d := range dfoData {
-				dataId, _ := strconv.ParseInt(d.Id, 10, 64)
-				shouldClose = false
-				matchesDateFilter := true
+			if len(dfoData) > 0 {
+				// Compare the data from DFO with the DMW data
+				for _, d := range dfoData {
+					dataId, _ := strconv.ParseInt(d.Id, 10, 64)
+					shouldClose = false
+					matchesDateFilter := true
 
-				// If date filter was added, only check dmw known contacts between those dates
-				if inputData.DateFrom != "" {
-					if convertedDate <= inputData.DateFrom || convertedDate >= inputData.DateTo {
-						matchesDateFilter = false
+					// If date filter was added, only check dmw known contacts between those dates
+					if inputData.DateFrom != "" {
+						if convertedDate <= inputData.DateFrom || convertedDate >= inputData.DateTo {
+							matchesDateFilter = false
+						}
+
+						if !matchesDateFilter {
+							break
+						}
 					}
 
-					if !matchesDateFilter {
+					if contact.ContactID == dataId {
+						found = true
+						foundCount++
 						break
+					} else {
+						shouldClose = true
 					}
 				}
-
-				if contact.ContactID == dataId {
-					found = true
-					foundCount++
-					break
-				} else {
-					shouldClose = true
-				}
+			} else {
+				shouldClose = true
 			}
 
 			if !found && shouldClose {
@@ -1210,7 +1214,7 @@ func getDfoContactData(dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAu
 	var logMsg string
 
 	// Call DFO v3.0 GET contact by contactId
-	dfoResponse, respErr := makeDfoApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, strconv.Itoa(int(contact.ContactID)))
+	dfoResponse, respErr := makeDfoApiCall(dfoContactByIdApiUrl, dfoAuthTokenObj, "GET", strconv.Itoa(int(contact.ContactID)))
 	if respErr != nil {
 		dfoClosedContactData.Err = respErr
 		dfoClosedContactData.Id = strconv.FormatInt(contact.ContactID, 10)
@@ -1222,21 +1226,21 @@ func getDfoContactData(dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAu
 		}
 
 		logMsg = fmt.Sprintf("success: received dfo data for contactId: [%d]\n", contact.ContactID)
-		log = createLog(logMsg, []byte(logMsg))
+		log = createLog(logMsg, log)
 	}
 
 	return dfoClosedContactData, log
 }
 
 // makeCxOneApiCall calls CxOne api GET tenant by tenantId and returns the tenant data object
-func makeCxOneApiCall(apiUrl string, token models.CxoneAuthTokenObj, tenantId string) ([]byte, error) {
+func makeCxOneApiCall(apiUrl string, token models.CxoneAuthTokenObj, tenantId string, method string) ([]byte, error) {
 	var bearer = token.TokenType + " " + token.IdToken
 	client := &http.Client{}
 	resp := &http.Response{}
 	var responseData []byte
 
 	// Create a new request using http
-	req, err := http.NewRequest("GET", apiUrl, nil)
+	req, err := http.NewRequest(method, apiUrl, nil)
 	if err != nil {
 		err = fmt.Errorf("[%s] attempt to create http.NewRequest returned an error: [%v]\n", makeCxOneApiCallOp, err)
 		return responseData, err
@@ -1270,7 +1274,7 @@ func makeCxOneApiCall(apiUrl string, token models.CxoneAuthTokenObj, tenantId st
 }
 
 // makeDfoApiCall calls DFO 3.0 APIs and returns the response object
-func makeDfoApiCall(apiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, contactId string) ([]byte, error) {
+func makeDfoApiCall(apiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, method string, contactId string) ([]byte, error) {
 	var bearer = dfoAuthTokenObj.TokenType + " " + dfoAuthTokenObj.AccessToken
 	client := &http.Client{}
 	resp := &http.Response{}
@@ -1281,7 +1285,7 @@ func makeDfoApiCall(apiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, conta
 	}
 
 	// Create a new request using http
-	req, err := http.NewRequest("GET", apiUrl, nil)
+	req, err := http.NewRequest(method, apiUrl, nil)
 	if err != nil {
 		err = fmt.Errorf("[%s] attempt to create http.NewRequest returned an error: [%v]\n", makeDfoApiCallOp, err)
 		return responseData, err
