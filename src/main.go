@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"github.com/MyGoProjects/http-go-server/src/models"
 	"github.com/google/uuid"
+	db "github.com/inContact/orch-common/dbmappings"
+	"github.com/inContact/orch-common/fsm"
 	pbm "github.com/inContact/orch-common/proto/digi/digimiddleware"
 	"github.com/inContact/orch-digital-middleware/pkg/digiservice"
 	"github.com/inContact/orch-digital-middleware/pkg/digitransport"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -28,32 +31,6 @@ const (
 	// Batch size for processing contacts to update (arbitrarily chose 100 as it seemed safe and manageable)
 	batchSize   = 100
 	contentType = "application/json"
-
-	// CxOne api url path variables
-	cxoneApiUrlPrefix          = "https://"
-	cxoneApiPath               = ".nice-incontact.com/"
-	cxoneApiPathNoDash         = ".niceincontact.com/"
-	cxoneGetTenantByIdEndpoint = "tenants/id/"
-	cxoneGetTokenEndpoint      = "authentication/v1/token/access-key"
-
-	// DFO api url path variables
-	dfoApiUrlPrefix          = "https://api-de-"
-	dfoApiV2Path             = ".niceincontact.com/engager/2.0"
-	dfoApiV3Path             = ".niceincontact.com/dfo/3.0"
-	dfoAuthTokenEndpoint     = "/token"
-	dfoGetChannelsEndpoint   = "/channels"
-	dfoContactSearchEndpoint = "/contacts"
-	dfoContactByIdEndpoint   = "/contacts/"
-
-	// DMW api url path variables
-	dmwApiUrlPrefix      = "http://digi-shared-eks01-"
-	dmwApiPath           = "/digimiddleware"
-	dmwApiPort           = "8085"
-	dmwGetStatesEndpoint = "/getstatesbytenants"
-
-	// DMW gRPC path variables
-	dmwGrpcUriPrefix = "digi-shared-eks01-"
-	dmwGrpcPort      = "9884"
 
 	// Function names for logging
 	buildDeltaListOp                = "buildDeltaList"
@@ -72,19 +49,6 @@ const (
 	processNotFoundEventOp          = "processNotFoundEvent"
 	sendUpdateRecordsToMiddlewareOp = "sendUpdateRecordsToMiddleware"
 
-	// "Prompt for input" string variables in order they are prompted
-	regionRequest           = "region - i.e. \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)"
-	envRequest              = "environment - i.e. \"dev\", \"test\", \"staging\", \"prod\""
-	tenantGuidRequest       = "tenantID (in GUID format)"
-	accessKeyIdRequest      = "cxone accessKeyId (decode k9s - :secrets - digimiddleware-mcr-access-details)"
-	accessKeySecretRequest  = "cxone accessKeySecret (decode k9s - :secrets - digimiddleware-mcr-access-details)"
-	clientIdRequest         = "dfo clientId"
-	clientSecretRequest     = "dfo clientSecret"
-	dateFromRequest         = "\"FromDate\" using format \"YYYY-mm-dd\" (OPTIONAL: Return for no date filter)"
-	dateToRequest           = "\"ToDate\" in format \"YYYY-mm-dd\""
-	notFoundFlag            = "\"yes\" if you want to also process any records that are not found in DFO but exist in Digimiddleware, otherwise leave blank.  If you don't know, LEAVE BLANK."
-	continueProcessNotFound = "\"yes\" to confirm that you want to continue to process the not found contact(s)"
-
 	// Log string for http responses other than 200
 	httpBadResponse = " returned response other than 200 success - response.StatusCode: [%d], response.Status: [%s]\n"
 )
@@ -99,19 +63,65 @@ type DfoApiUrlObj struct {
 	Url         string
 }
 
-// Input variables in order they are requested
+type ApiObjects struct {
+	CxOneApi CxOneApiObj
+	DfoApi   DfoApiObj
+	DmwApi   DmwApiObj
+	DmwGrpc  DmwGrpcObj
+}
+type CxOneApiObj struct {
+	UrlPrefix             string
+	Path                  string
+	PathNoDash            string
+	GetTenantbyIdEndpoint string
+	GetTokenEndpoint      string
+}
+
+type DfoApiObj struct {
+	UrlPrefix                         string
+	V2Path                            string
+	V3Path                            string
+	AuthTokenEndpoint                 string
+	GetChannelsEndpoint               string
+	GetContactSearchEndpoint          string
+	ContactSearchActiveContactsFilter string
+	GetContactByIdEndpoint            string
+}
+
+type DmwApiObj struct {
+	UrlPrefix         string
+	Path              string
+	Port              string
+	GetStatesEndpoint string
+}
+
+type DmwGrpcObj struct {
+	UriPrefix string
+	Port      string
+}
+
+type InputRequestObj struct {
+	Region               string
+	Environment          string
+	TenantId             string
+	CxOneAccessKeyId     string
+	CxOneAccessKeySecret string
+	DfoClientId          string
+	DfoClientSecret      string
+	DateFrom             string
+	DateTo               string
+}
+
 type InputDataObj struct {
-	AccessKeyId             string
-	AccessKeySecret         string
-	ClientId                string
-	ClientSecret            string
-	continueProcessNotFound string
-	DateFrom                string
-	DateTo                  string
-	Env                     string
-	processNotFound         string
-	Region                  string
-	TenantId                string
+	Region          string
+	Env             string
+	TenantId        string
+	AccessKeyId     string
+	AccessKeySecret string
+	ClientId        string
+	ClientSecret    string
+	DateFrom        string
+	DateTo          string
 }
 
 type TenantIdsWrapper struct {
@@ -129,36 +139,98 @@ func main() {
 	var tenants [1]string
 	var wg sync.WaitGroup
 
-	//Prompt for needed input data
-	inputData.Region = promptForInputData("region", regionRequest)
-	inputData.Region = strings.ToLower(inputData.Region)
-	inputData.Env = promptForInputData("env", envRequest)
-	inputData.Env = strings.ToLower(inputData.Env)
-	inputData.AccessKeyId = promptForInputData("accessKeyCreds", accessKeyIdRequest)
-	inputData.AccessKeySecret = promptForInputData("accessKeyCreds", accessKeySecretRequest)
-	inputData.TenantId = promptForInputData("tenantId", tenantGuidRequest)
-	inputData.ClientId = promptForInputData("clientCreds", clientIdRequest)
-	inputData.ClientSecret = promptForInputData("clientCreds", clientSecretRequest)
-	inputData.DateFrom = promptForInputData("dateFrom", dateFromRequest)
-	if inputData.DateFrom != "" {
-		inputData.DateTo = promptForInputData("dateTo", dateToRequest)
+	var cxOneApi = CxOneApiObj{
+		UrlPrefix:             "https://",
+		Path:                  ".nice-incontact.com/",
+		PathNoDash:            ".niceincontact.com/",
+		GetTenantbyIdEndpoint: "tenants/id/",
+		GetTokenEndpoint:      "authentication/v1/token/access-key",
 	}
-	inputData.processNotFound = promptForInputData("notFound", notFoundFlag)
-	inputData.processNotFound = strings.ToLower(inputData.processNotFound)
+
+	var dfoApi = DfoApiObj{
+		UrlPrefix:                         "https://api-de-",
+		V2Path:                            ".niceincontact.com/engager/2.0",
+		V3Path:                            ".niceincontact.com/dfo/3.0",
+		AuthTokenEndpoint:                 "/token",
+		GetChannelsEndpoint:               "/channels",
+		GetContactSearchEndpoint:          "/contacts",
+		ContactSearchActiveContactsFilter: "?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open",
+		GetContactByIdEndpoint:            "/contacts/",
+	}
+
+	var dmwApi = DmwApiObj{ //old Eks
+		UrlPrefix:         "http://digi-shared-eks01-",
+		Path:              "/digimiddleware",
+		Port:              "8085",
+		GetStatesEndpoint: "/getstatesbytenants",
+	}
+
+	var dmwGrpc = DmwGrpcObj{ //old Eks
+		UriPrefix: "digi-shared-eks01-",
+		Port:      "9884",
+	}
+
+	var apiObjects = ApiObjects{
+		CxOneApi: cxOneApi,
+		DfoApi:   dfoApi,
+		DmwApi:   dmwApi,
+		DmwGrpc:  dmwGrpc,
+	}
+
+	var inputRequest = InputRequestObj{
+		Region:               "region - i.e. \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)",
+		Environment:          "environment - i.e. \"dev\", \"test\", \"staging\", \"prod\"",
+		TenantId:             "tenantID (in GUID format)",
+		CxOneAccessKeyId:     "cxone accessKeyId (decode k9s - :secrets - digimiddleware-mcr-access-details)",
+		CxOneAccessKeySecret: "cxone accessKeySecret (decode k9s - :secrets - digimiddleware-mcr-access-details)",
+		DfoClientId:          "dfo clientId",
+		DfoClientSecret:      "dfo clientSecret",
+		DateFrom:             "\"FromDate\" using format \"YYYY-mm-dd\" (OPTIONAL: Return for no date filter)",
+		DateTo:               "\"ToDate\" in format \"YYYY-mm-dd\"",
+	}
+
+	//Prompt for needed input data
+	inputData.Region = promptForInputData("region", inputRequest.Region)
+	inputData.Region = strings.ToLower(inputData.Region)
+	inputData.Env = promptForInputData("env", inputRequest.Environment)
+	inputData.Env = strings.ToLower(inputData.Env)
+	inputData.AccessKeyId = promptForInputData("accessKeyCreds", inputRequest.CxOneAccessKeyId)
+	inputData.AccessKeySecret = promptForInputData("accessKeyCreds", inputRequest.CxOneAccessKeySecret)
+	inputData.TenantId = promptForInputData("tenantId", inputRequest.TenantId)
+	inputData.ClientId = promptForInputData("clientCreds", inputRequest.DfoClientId)
+	inputData.ClientSecret = promptForInputData("clientCreds", inputRequest.DfoClientSecret)
+	inputData.DateFrom = promptForInputData("dateFrom", inputRequest.DateFrom)
+	if inputData.DateFrom != "" {
+		inputData.DateTo = promptForInputData("dateTo", inputRequest.DateTo)
+	}
+
+	// Update below as new regions switch over to the new Eks
+	if inputData.Env == "dev" { //new Eks
+		dmwApi.UrlPrefix = "https://digi-"
+		dmwApi.Port = "443"
+		dmwGrpc.UriPrefix = "digi-"
+		dmwGrpc.Port = "443"
+	}
+	if inputData.Env == "localhost" {
+		dmwApi.UrlPrefix = "http://localhost:"
+		dmwGrpc.UriPrefix = "localhost:"
+	}
 
 	// Build api and gRPC URIs
-	cxoneGetServiceTokenApiUrl, logFile := buildUri("cxoneGetToken", inputData, logFile)
-	cxoneGetTenantByIdApiUrl, logFile := buildUri("cxoneGetTenant", inputData, logFile)
-	dmwContactStateApiUrl, logFile := buildUri("dmwGetStates", inputData, logFile)
-	dfoAuthTokenApiUrl, logFile := buildUri("dfoAuthToken", inputData, logFile)
-	dfoGetChannelsApiUrl, logFile := buildUri("dfoGetContacts", inputData, logFile)
-	dfoContactSearchApiUrl, logFile := buildUri("dfoContactSearch", inputData, logFile)
-	dfoContactByIdApiUrl, logFile := buildUri("dfoContactById", inputData, logFile)
-	dmwGrpcApiUrl, logFile := buildUri("dmwGrpc", inputData, logFile)
+	cxoneGetServiceTokenApiUrl, logFile := buildUri("cxoneGetToken", inputData, apiObjects, logFile)
+	cxoneGetTenantByIdApiUrl, logFile := buildUri("cxoneGetTenant", inputData, apiObjects, logFile)
+	dmwContactStateApiUrl, logFile := buildUri("dmwGetStates", inputData, apiObjects, logFile)
+	dfoAuthTokenApiUrl, logFile := buildUri("dfoAuthToken", inputData, apiObjects, logFile)
+	dfoGetChannelsApiUrl, logFile := buildUri("dfoGetContacts", inputData, apiObjects, logFile)
+	dfoContactSearchApiUrl, logFile := buildUri("dfoContactSearch", inputData, apiObjects, logFile)
+	dfoContactByIdApiUrl, logFile := buildUri("dfoContactById", inputData, apiObjects, logFile)
+	dmwGrpcApiUrl, logFile := buildUri("dmwGrpc", inputData, apiObjects, logFile)
 
-	// Get DFO auth token
+	// Get DFO auth Token and CxOne Service Token asynchronously
+	wg.Add(2)
+
+	//getDfoAuthToken
 	var dfoAuthTokenObj models.DfoAuthTokenObj
-	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		var err error
@@ -173,13 +245,12 @@ func main() {
 			logFile = createLog(logMsg, logFile)
 			return
 		}
-		logMsg = fmt.Sprintf("[%s] dfo auth token successfully retrieved, duration=%s\n", getDfoAuthTokenOp, time.Since(t))
+		logMsg = fmt.Sprintf("[%s] dfo auth Token successfully retrieved, duration=%s\n", getDfoAuthTokenOp, time.Since(t))
 		logFile = createLog(logMsg, logFile)
 	}()
 
-	// Get Service Token to call CxOne Apis
-	var token models.CxoneAuthTokenObj
-	wg.Add(1)
+	//getServiceToken
+	var cxOneToken models.CxoneAuthTokenObj
 	go func() {
 		defer wg.Done()
 		var err error
@@ -188,9 +259,9 @@ func main() {
 		logMsg = fmt.Sprintf("begin api call: %s\n", getServiceTokenOp)
 		logFile = createLog(logMsg, logFile)
 
-		token, err = getServiceToken(cxoneGetServiceTokenApiUrl, inputData)
+		cxOneToken, err = getServiceToken(cxoneGetServiceTokenApiUrl, inputData)
 		if err != nil {
-			token.Error = err
+			cxOneToken.Error = err
 			logMsg = fmt.Sprintf(err.Error())
 			logFile = createLog(logMsg, logFile)
 			return
@@ -200,9 +271,10 @@ func main() {
 	}()
 	wg.Wait()
 
-	// Get Tenant data
+	// Get CxOne Tenant data and DFO Channel data asynchronously
+	//getTenantData
 	var tenantData models.TenantWrapper
-	if token.Error == nil {
+	if cxOneToken.Error == nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -212,8 +284,8 @@ func main() {
 			logMsg = fmt.Sprintf("begin api call: %s\n", getTenantDataOp)
 			logFile = createLog(logMsg, logFile)
 
-			if token.Error == nil {
-				tenantData, err = getTenantData(cxoneGetTenantByIdApiUrl, inputData, token)
+			if cxOneToken.Error == nil {
+				tenantData, err = getTenantData(cxoneGetTenantByIdApiUrl, inputData, cxOneToken)
 				if err != nil {
 					tenantData.Error = err
 					logMsg = fmt.Sprintf(err.Error())
@@ -224,14 +296,13 @@ func main() {
 				logFile = createLog(logMsg, logFile)
 			}
 		}()
-		wg.Wait()
 	} else {
 		logMsg = fmt.Sprintf("unable to get service token to make cxone api calls to %s - terminating service", getTenantDataOp)
 		logFile = createLog(logMsg, logFile)
 		return
 	}
 
-	// Get Channels
+	//getChannels
 	var channels []models.ChannelData
 	if dfoAuthTokenObj.Error == nil {
 		wg.Add(1)
@@ -252,15 +323,16 @@ func main() {
 			logMsg = fmt.Sprintf("[%s] returned [%v] total channels, duration=%s\n", getChannelsOp, len(channels), time.Since(t))
 			logFile = createLog(logMsg, logFile)
 		}()
-		wg.Wait()
 	} else {
 		logMsg = fmt.Sprintf("unable to get dfo auth token to make dfo api calls to %s - terminating service", getChannelsOp)
 		logFile = createLog(logMsg, logFile)
 		return
 	}
+	wg.Wait()
 
-	// Get list of Digimiddleware known active contacts
-	if dfoAuthTokenObj.Error == nil {
+	// Get list of Digimiddleware known active contacts and DFO active contacts asynchronously
+	//getDmwActiveContactStateData
+	if dfoAuthTokenObj.Error == nil { //Put if statement above both DMW and DFO calls as if we are unable to get a list of contacts from DFO, there is no sense calling DMW either.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -281,13 +353,12 @@ func main() {
 			logMsg = fmt.Sprintf("[%s] successfully returned [%d] total contacts, duration=%s\n", getDmwActiveContactStateDataOp, len(dmwKnownContact.Contacts), time.Since(t))
 			logFile = createLog(logMsg, logFile)
 		}()
-		wg.Wait()
 
-		// Call DFO 3.0 GET Contact Search API to get list of DFO active contacts
-		var err error
+		//makeDfoContactSearchApiCall
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			var err error
 			t := time.Now()
 
 			logMsg = fmt.Sprintf("begin api call: [%s]\n", makeDfoContactSearchApiCallOp)
@@ -305,12 +376,12 @@ func main() {
 			logMsg = fmt.Sprintf("[%s] - done, duration=%s, dfoActiveContacts=%d\n", makeDfoContactSearchApiCallOp, time.Since(t), len(dfoDataList))
 			logFile = createLog(logMsg, logFile)
 		}()
-		wg.Wait()
 	} else {
 		logMsg = fmt.Sprintf("unable to get dfo auth token to make dfo api calls to %s - terminating service", makeDfoContactSearchApiCallOp)
 		logFile = createLog(logMsg, logFile)
 		return
 	}
+	wg.Wait()
 
 	// Compare lists to get the contacts that exist in DMW but are closed in DFO.
 	var deltaContacts models.DmwKnownContacts
@@ -320,8 +391,16 @@ func main() {
 			logMsg = fmt.Sprintf("begin building list: [%s]\n", buildDeltaListOp)
 			logFile = createLog(logMsg, logFile)
 
+			// Create a Map of the DFO Data list
+			dfoDataMap := make(map[int64]models.DataView)
+			for _, dfoc := range dfoDataList {
+				dfoContactId, _ := strconv.ParseInt(dfoc.Id, 10, 64)
+				dfoDataMap[dfoContactId] = dfoc
+			}
+
 			t := time.Now()
-			deltaContacts, logFile = buildDeltaList(inputData, dmwKnownContact, dfoDataList, logFile)
+			//deltaContacts, logFile = buildDeltaList(inputData, dmwKnownContact, dfoDataList, logFile)
+			deltaContacts, logFile = buildDeltaListMap(inputData, dmwKnownContact, dfoDataMap, logFile)
 
 			logMsg = fmt.Sprintf("[%s] - done, duration=%s, deltaContacts=%d\n", buildDeltaListOp, time.Since(t), len(deltaContacts.Contacts))
 			logFile = createLog(logMsg, logFile)
@@ -333,7 +412,12 @@ func main() {
 			return
 		}
 	} else {
-		logMsg = fmt.Sprintf("error retrieving data from api - will not attempt to process updates")
+		if dmwKnownContact.Error != nil {
+			logMsg = fmt.Sprintf("error retrieving data from [getDmwActiveContactStateData] - will not attempt to process updates")
+		}
+		if dfoData.Err != nil {
+			logMsg = fmt.Sprintf("error retrieving data from [makeDfoContactSearchApiCall] - will not attempt to process updates")
+		}
 		logFile = createLog(logMsg, logFile)
 
 		return
@@ -353,7 +437,7 @@ func main() {
 	logFile = createLog(logMsg, logFile)
 
 	// Create output logFile file
-	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\Logs\\LOG_%s_%s_%d", tenantData.Tenant.ClusterId, tenantData.Tenant.BillingId, time.Now().UnixNano())
+	filepath := fmt.Sprintf("D:\\ContactCloseUpdates\\Logs\\LOG_%s_%s_%d", tenantData.Tenant.ClusterId, tenantData.Tenant.BillingId, time.Now().UnixNano())
 
 	writeLogFile(".csv", filepath, logFile)
 }
@@ -364,14 +448,9 @@ func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoA
 	var errList []models.DataView
 	var logMsg string
 	var mtx sync.Mutex
-	var processNotFound bool
 	var sanitizedUpdateRecords []*pbm.CaseUpdateEvent
 	var updateMessage *pbm.CaseUpdateEvent
 	var updatedRecords []*pbm.CaseUpdateEvent
-
-	if inputData.processNotFound == "yes" {
-		processNotFound = true
-	}
 
 	for start, end := 0, 0; start <= len(deltaContacts)-1; start = end {
 		var err error
@@ -399,37 +478,36 @@ func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoA
 				log = createLog(logMsg, log)
 			}
 
-			if processNotFound {
-				inputData.continueProcessNotFound = promptForInputData("continueProcessNotFound", continueProcessNotFound)
-				inputData.continueProcessNotFound = strings.ToLower(inputData.continueProcessNotFound)
-			} else {
-				logMsg = fmt.Sprintf("ERROR processing batch - will not attempt to process above [%d] contact(s)\n", len(errList))
-				log = createLog(logMsg, log)
+			//make a map for deltaContacts
+			deltaContactsMap := make(map[int64]models.DmwKnownContact)
+			for _, dc := range deltaContacts {
+				deltaContactsMap[dc.ContactID] = dc
+			}
+			//make a map for channels
+			channelsMap := make(map[string]models.ChannelData)
+			for _, c := range channels {
+				channelsMap[c.ChannelId] = c
 			}
 
-			if inputData.continueProcessNotFound == "yes" {
-				logMsg = fmt.Sprintf("will attempt to create events for above [%d] contact(s) using data we know from dmw\n", len(errList))
-				log = createLog(logMsg, log)
+			for _, e := range errList {
+				// For contacts not found in DFO, attempt to build a CaseUpdate message with data we are aware of
+				updateMessage, err = processNotFoundEvent(deltaContactsMap, e, tenant, channelsMap)
+				if err != nil {
+					err = fmt.Errorf("[%s] unable to create case update event for contactId: [%s] - no further attempts to update contact will be made\n[ERROR]: %v\n", processNotFoundEventOp, e.Id, err)
+					log = createLog(logMsg, log)
+					break
+				}
 
-				for _, e := range errList {
-					// For contacts not found in DFO, attempt to build a CaseUpdate message with data we are aware of
-					updateMessage, err = processNotFoundEvent(deltaContacts, e, tenant, channels)
-					if err != nil {
-						err = fmt.Errorf("[%s] unable to create case update event for contactId: [%s] - no further attempts to update contact will be made\n[ERROR]: %v\n", processNotFoundEventOp, e.Id, err)
-						log = createLog(logMsg, log)
-						break
-					}
-
-					if updateMessage != nil {
-						mtx.Lock()
-						sanitizedUpdateRecords = append(sanitizedUpdateRecords, updateMessage)
-						mtx.Unlock()
-					} else {
-						logMsg = fmt.Sprintf("[%s] - unable to create update message for contactId [%s]\n", processNotFoundEventOp, e.Id)
-						log = createLog(logMsg, log)
-					}
+				if updateMessage != nil {
+					mtx.Lock()
+					sanitizedUpdateRecords = append(sanitizedUpdateRecords, updateMessage)
+					mtx.Unlock()
+				} else {
+					logMsg = fmt.Sprintf("[%s] - unable to create update message for contactId [%s]\n", processNotFoundEventOp, e.Id)
+					log = createLog(logMsg, log)
 				}
 			}
+			//}
 		}
 		batchCount++
 
@@ -474,7 +552,7 @@ func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoA
 	}
 
 	// Create output file and print updated contacts to console
-	filepath := fmt.Sprintf("C:\\Users\\kristin.barlow\\ContactCloseUpdates\\%s_%s_%d", tenant.ClusterId, tenant.BillingId, time.Now().UnixNano())
+	filepath := fmt.Sprintf("D:\\ContactCloseUpdates\\%s_%s_%d", tenant.ClusterId, tenant.BillingId, time.Now().UnixNano())
 
 	mr, _ := json.Marshal(updatedRecords)
 	writeLogFile(".csv", filepath, mr)
@@ -542,7 +620,7 @@ func buildShipment(contactData models.DataView, errList []models.DataView, tenan
 }
 
 // processNotFoundEvent will build an event using fake data and push event to DMW to clean up the stuck contacts that were created with automation (not found in DFO)
-func processNotFoundEvent(deltaContacts []models.DmwKnownContact, notFoundContact models.DataView, tenant models.Tenant, channels []models.ChannelData) (*pbm.CaseUpdateEvent, error) {
+func processNotFoundEvent(deltaContactsMap map[int64]models.DmwKnownContact, notFoundContact models.DataView, tenant models.Tenant, channelsMap map[string]models.ChannelData) (*pbm.CaseUpdateEvent, error) {
 	b, _ := strconv.ParseInt(tenant.BillingId, 10, 32)
 	businessUnitNo := int32(b)
 	var channelIdOnExternalPlatform string
@@ -559,71 +637,68 @@ func processNotFoundEvent(deltaContacts []models.DmwKnownContact, notFoundContac
 
 	contactId, _ := strconv.ParseInt(notFoundContact.Id, 10, 64)
 
-	// Get data we know from the deltaContacts object
-	for _, dc := range deltaContacts {
-		if contactId == dc.ContactID {
-			// Convert the int to correct string direction
-			if dc.Direction == 0 {
-				direction = "outbound"
-			} else {
-				direction = "inbound"
-			}
+	//check map for key to contactID
+	dc, ok := deltaContactsMap[contactId]
+	if ok {
+		// Convert the int to correct string direction
+		if dc.Direction == 0 {
+			direction = "outbound"
+		} else {
+			direction = "inbound"
+		}
 
-			// Range through channel list and populate the channel data
-			for _, channel := range channels {
-				if channel.ChannelId == dc.ChannelID {
-					channelIdOnExternalPlatform = channel.IdOnExternalPlatform
-					channelIntegrationBoxIdentifier = channel.IntegrationBoxIdent
-					channelIsPrivate = channel.IsPrivate
-					channelName = channel.Name
-					channelRealExternalPlatformId = channel.RealExternalPlatformId
-					break
-				}
-			}
+		// Range through channel list and populate the channel data
+		//check channelsMap for key
+		channel, ok := channelsMap[dc.ChannelID]
+		if ok {
+			channelIdOnExternalPlatform = channel.IdOnExternalPlatform
+			channelIntegrationBoxIdentifier = channel.IntegrationBoxIdent
+			channelIsPrivate = channel.IsPrivate
+			channelName = channel.Name
+			channelRealExternalPlatformId = channel.RealExternalPlatformId
+		}
 
-			// We are not able to obtain the exact contact data since these contacts do not exist in DFO so update with the data we are aware of
-			event.Data.Contact.ID = notFoundContact.Id
-			event.CreatedAt = dc.CurrentContactDate
-			event.EventID = uuid.New().String()
-			event.EventObject = models.EventObject_Case
-			event.EventType = 1        // TYPE_STATUS_CHANGED
-			event.Data.Brand.ID = 9999 // we don't use this so hardCode anything
-			event.Data.Brand.TenantID = tenant.TenantId
-			event.Data.Brand.BusinessUnitID = businessUnitNo
-			event.Data.Case.ID = dc.CaseIDString
-			event.Data.Case.ContactId = uuid.New().String()         // unknown
-			event.Data.Case.CustomerContactId = uuid.New().String() // unknown
-			event.Data.Case.DetailUrl = ""                          // unknown
-			event.Data.Case.EndUserRecipients = recipients          // unknown
-			event.Data.Case.InboxAssignee = 0                       // unknown
-			event.Data.Case.InteractionId = uuid.New().String()     // unknown
-			event.Data.Case.Direction = direction
-			event.Data.Case.ThreadId = uuid.New().String() // unknown
-			event.Data.Case.RoutingQueueId = dc.QueueID
-			event.Data.Case.RoutingQueuePriority = 1 // unknown
-			event.Data.Case.Status = "closed"        // hard-code to endContact
-			event.Data.Case.OwnerAssignee = 0        // unknown
-			event.Data.Channel.ID = dc.ChannelID
-			event.Data.Channel.Name = channelName
-			event.Data.Channel.IntegrationBoxIdentifier = channelIntegrationBoxIdentifier
-			event.Data.Channel.IDOnExternalPlatform = channelIdOnExternalPlatform
-			event.Data.Channel.IsPrivate = channelIsPrivate
-			event.Data.Channel.RealExternalPlatformID = channelRealExternalPlatformId
-			event.Data.Case.AuthorUser.ID = 0
-			event.Data.Case.AuthorUser.InContactID = ""
-			event.Data.Case.AuthorUser.EmailAddress = ""
-			event.Data.Case.AuthorUser.LoginUsername = ""
-			event.Data.Case.AuthorUser.FirstName = ""
-			event.Data.Case.AuthorUser.SurName = ""
-			event.Data.Case.AuthorEndUserIdentity.ID = "automation_" + randomGuid
-			event.Data.Case.AuthorEndUserIdentity.IdOnExternalPlatform = randomGuid
-			event.Data.Case.AuthorEndUserIdentity.FullName = "automation test "
+		// We are not able to obtain the exact contact data since these contacts do not exist in DFO so update with the data we are aware of
+		event.Data.Contact.ID = notFoundContact.Id
+		event.CreatedAt = dc.CurrentContactDate
+		event.EventID = uuid.New().String()
+		event.EventObject = models.EventObject_Case
+		event.EventType = 1        // TYPE_STATUS_CHANGED
+		event.Data.Brand.ID = 9999 // we don't use this so hardCode anything
+		event.Data.Brand.TenantID = tenant.TenantId
+		event.Data.Brand.BusinessUnitID = businessUnitNo
+		event.Data.Case.ID = dc.CaseIDString
+		event.Data.Case.ContactId = uuid.New().String()         // unknown
+		event.Data.Case.CustomerContactId = uuid.New().String() // unknown
+		event.Data.Case.DetailUrl = ""                          // unknown
+		event.Data.Case.EndUserRecipients = recipients          // unknown
+		event.Data.Case.InboxAssignee = 0                       // unknown
+		event.Data.Case.InteractionId = uuid.New().String()     // unknown
+		event.Data.Case.Direction = direction
+		event.Data.Case.ThreadId = uuid.New().String() // unknown
+		event.Data.Case.RoutingQueueId = dc.QueueID
+		event.Data.Case.RoutingQueuePriority = 1 // unknown
+		event.Data.Case.Status = "closed"        // hard-code to endContact
+		event.Data.Case.OwnerAssignee = 0        // unknown
+		event.Data.Channel.ID = dc.ChannelID
+		event.Data.Channel.Name = channelName
+		event.Data.Channel.IntegrationBoxIdentifier = channelIntegrationBoxIdentifier
+		event.Data.Channel.IDOnExternalPlatform = channelIdOnExternalPlatform
+		event.Data.Channel.IsPrivate = channelIsPrivate
+		event.Data.Channel.RealExternalPlatformID = channelRealExternalPlatformId
+		event.Data.Case.AuthorUser.ID = 0
+		event.Data.Case.AuthorUser.InContactID = ""
+		event.Data.Case.AuthorUser.EmailAddress = ""
+		event.Data.Case.AuthorUser.LoginUsername = ""
+		event.Data.Case.AuthorUser.FirstName = ""
+		event.Data.Case.AuthorUser.SurName = ""
+		event.Data.Case.AuthorEndUserIdentity.ID = "automation_" + randomGuid
+		event.Data.Case.AuthorEndUserIdentity.IdOnExternalPlatform = randomGuid
+		event.Data.Case.AuthorEndUserIdentity.FullName = "automation test "
 
-			updateMessage, err = makeCaseUpdate(event)
-			if err != nil {
-				return nil, err
-			}
-			break
+		updateMessage, err = makeCaseUpdate(event)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -631,7 +706,7 @@ func processNotFoundEvent(deltaContacts []models.DmwKnownContact, notFoundContac
 }
 
 // buildUri builds the uri for each api or grpc call needed
-func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
+func buildUri(apiType string, i InputDataObj, apiObjects ApiObjects, log []byte) (string, []byte) {
 	uri := ""
 	logMsg := fmt.Sprintf("%s uri for requested region [%s] and env [%s] -- ", apiType, i.Region, i.Env)
 	log = createLog(logMsg, log)
@@ -642,18 +717,18 @@ func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 		case "prod":
 			switch i.Region {
 			case "na1", "au1":
-				uri = cxoneApiUrlPrefix + i.Region + cxoneApiPath + cxoneGetTenantByIdEndpoint
+				uri = apiObjects.CxOneApi.UrlPrefix + i.Region + apiObjects.CxOneApi.Path + apiObjects.CxOneApi.GetTenantbyIdEndpoint
 				logMsg = fmt.Sprintln(uri)
 				log = createLog(logMsg, log)
 			case "eu1", "jp1", "uk1", "ca1":
-				uri = cxoneApiUrlPrefix + i.Region + cxoneApiPathNoDash + cxoneGetTenantByIdEndpoint
+				uri = apiObjects.CxOneApi.UrlPrefix + i.Region + apiObjects.CxOneApi.PathNoDash + apiObjects.CxOneApi.GetTenantbyIdEndpoint
 				logMsg = fmt.Sprintln(uri)
 				log = createLog(logMsg, log)
 			default:
 				break
 			}
 		case "dev", "test", "staging":
-			uri = cxoneApiUrlPrefix + i.Region + "." + i.Env + cxoneApiPath + cxoneGetTenantByIdEndpoint
+			uri = apiObjects.CxOneApi.UrlPrefix + i.Region + "." + i.Env + apiObjects.CxOneApi.Path + apiObjects.CxOneApi.GetTenantbyIdEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		default:
@@ -664,35 +739,39 @@ func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 		case "prod":
 			switch i.Region {
 			case "na1", "au1":
-				uri = cxoneApiUrlPrefix + i.Region + cxoneApiPath + cxoneGetTokenEndpoint
+				uri = apiObjects.CxOneApi.UrlPrefix + i.Region + apiObjects.CxOneApi.Path + apiObjects.CxOneApi.GetTokenEndpoint
 				logMsg = fmt.Sprintln(uri)
 				log = createLog(logMsg, log)
 			case "eu1", "jp1", "uk1", "ca1":
-				uri = cxoneApiUrlPrefix + i.Region + cxoneApiPathNoDash + cxoneGetTokenEndpoint
+				uri = apiObjects.CxOneApi.UrlPrefix + i.Region + apiObjects.CxOneApi.PathNoDash + apiObjects.CxOneApi.GetTokenEndpoint
 				logMsg = fmt.Sprintln(uri)
 				log = createLog(logMsg, log)
 			default:
 				break
 			}
 		case "dev", "test", "staging":
-			uri = cxoneApiUrlPrefix + i.Region + "." + i.Env + cxoneApiPath + cxoneGetTokenEndpoint
+			uri = apiObjects.CxOneApi.UrlPrefix + i.Region + "." + i.Env + apiObjects.CxOneApi.Path + apiObjects.CxOneApi.GetTokenEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		default:
 			break
 		}
 	case "dmwGetStates":
-		uri = dmwApiUrlPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + dmwApiPort + dmwApiPath + dmwGetStatesEndpoint
+		uri = apiObjects.DmwApi.UrlPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + apiObjects.DmwApi.Port + apiObjects.DmwApi.Path + apiObjects.DmwApi.GetStatesEndpoint
+		if i.Env == "localhost" {
+			uri = apiObjects.DmwApi.UrlPrefix + apiObjects.DmwApi.Port + apiObjects.DmwApi.Path + apiObjects.DmwApi.GetStatesEndpoint
+		}
+
 		logMsg = fmt.Sprintln(uri)
 		log = createLog(logMsg, log)
 	case "dfoAuthToken":
 		switch i.Env {
 		case "prod":
-			uri = dfoApiUrlPrefix + i.Region + dfoApiV2Path + dfoAuthTokenEndpoint
+			uri = apiObjects.DfoApi.UrlPrefix + i.Region + apiObjects.DfoApi.V2Path + apiObjects.DfoApi.AuthTokenEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		case "dev", "test", "staging":
-			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV2Path + dfoAuthTokenEndpoint
+			uri = apiObjects.DfoApi.UrlPrefix + i.Region + "." + i.Env + apiObjects.DfoApi.V2Path + apiObjects.DfoApi.AuthTokenEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		default:
@@ -701,11 +780,11 @@ func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 	case "dfoGetContacts":
 		switch i.Env {
 		case "prod":
-			uri = dfoApiUrlPrefix + i.Region + dfoApiV3Path + dfoGetChannelsEndpoint
+			uri = apiObjects.DfoApi.UrlPrefix + i.Region + apiObjects.DfoApi.V3Path + apiObjects.DfoApi.GetChannelsEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		case "dev", "test", "staging":
-			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV3Path + dfoGetChannelsEndpoint
+			uri = apiObjects.DfoApi.UrlPrefix + i.Region + "." + i.Env + apiObjects.DfoApi.V3Path + apiObjects.DfoApi.GetChannelsEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		default:
@@ -714,11 +793,11 @@ func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 	case "dfoContactSearch": // only requesting contacts in an active status to decrease load on api - assume if contact does not exist in response, it is closed or trashed
 		switch i.Env {
 		case "prod":
-			uri = dfoApiUrlPrefix + i.Region + dfoApiV3Path + dfoContactSearchEndpoint + "?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+			uri = apiObjects.DfoApi.UrlPrefix + i.Region + apiObjects.DfoApi.V3Path + apiObjects.DfoApi.GetContactSearchEndpoint + apiObjects.DfoApi.ContactSearchActiveContactsFilter
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		case "dev", "test", "staging":
-			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV3Path + dfoContactSearchEndpoint + "?status[]=new&status[]=resolved&status[]=escalated&status[]=pending&status[]=open"
+			uri = apiObjects.DfoApi.UrlPrefix + i.Region + "." + i.Env + apiObjects.DfoApi.V3Path + apiObjects.DfoApi.GetContactSearchEndpoint + apiObjects.DfoApi.ContactSearchActiveContactsFilter
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		default:
@@ -727,18 +806,21 @@ func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 	case "dfoContactById":
 		switch i.Env {
 		case "prod":
-			uri = dfoApiUrlPrefix + i.Region + dfoApiV3Path + dfoContactByIdEndpoint
+			uri = apiObjects.DfoApi.UrlPrefix + i.Region + apiObjects.DfoApi.V3Path + apiObjects.DfoApi.GetContactByIdEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		case "dev", "test", "staging":
-			uri = dfoApiUrlPrefix + i.Region + "." + i.Env + dfoApiV3Path + dfoContactByIdEndpoint
+			uri = apiObjects.DfoApi.UrlPrefix + i.Region + "." + i.Env + apiObjects.DfoApi.V3Path + apiObjects.DfoApi.GetContactByIdEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		default:
 			break
 		}
 	case "dmwGrpc":
-		uri = dmwGrpcUriPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + dmwGrpcPort
+		uri = apiObjects.DmwGrpc.UriPrefix + i.Region + ".omnichannel." + i.Env + ".internal:" + apiObjects.DmwGrpc.Port
+		if i.Env == "localhost" {
+			uri = apiObjects.DmwGrpc.UriPrefix + apiObjects.DmwGrpc.Port
+		}
 		logMsg = fmt.Sprintln(uri)
 		log = createLog(logMsg, log)
 	default:
@@ -750,6 +832,10 @@ func buildUri(apiType string, i InputDataObj, log []byte) (string, []byte) {
 // promptForInputData sends request for input data and validates the values, then returns the response
 func promptForInputData(inputType string, requestType string) string {
 	response := getInputData(requestType)
+
+	if response == "localhost" {
+		fmt.Printf("NOTE: must do port-forward if running on localhost: kubectl port-forward svc/voyager-digi-ingress 8085 9884 -n digi")
+	}
 
 	validInputData := false
 	for !validInputData {
@@ -771,7 +857,7 @@ func getInputData(inputType string) string {
 		fmt.Println(err)
 	}
 
-	return strings.TrimSuffix(response, "\n")
+	return strings.TrimSuffix(response, "\r\n")
 }
 
 // validateResponse verifies that the data input by the user was in a proper type or format
@@ -826,13 +912,6 @@ func validateResponse(inputValue string, inputType string) bool {
 		} else {
 			return true
 		}
-	case "notFound", "continueProcessNotFound":
-		if strings.ToLower(inputValue) == "yes" || inputValue == "" {
-			return true
-		} else {
-			fmt.Println("INPUT VALUE MUST BE BLANK OR \"YES\"")
-			return false
-		}
 	default:
 		return false
 	}
@@ -857,7 +936,7 @@ func getServiceToken(apiUrl string, i InputDataObj) (models.CxoneAuthTokenObj, e
 
 	if response != nil {
 		if response.StatusCode == 200 {
-			responseData, err = ioutil.ReadAll(response.Body)
+			responseData, err = io.ReadAll(response.Body)
 			if err != nil {
 				err = fmt.Errorf("[%s] returned error reading response body - error: %v\n", getServiceTokenOp, err)
 				return tokenObj, err
@@ -901,7 +980,7 @@ func getDfoAuthToken(apiUrl string, i InputDataObj) (models.DfoAuthTokenObj, err
 	}
 
 	if response.StatusCode == 200 {
-		responseData, err = ioutil.ReadAll(response.Body)
+		responseData, err = io.ReadAll(response.Body)
 		if err != nil {
 			err = fmt.Errorf("[%s] returned error reading response body - error: %v\n", getDfoAuthTokenOp, err)
 			return dfoAuthTokenObj, err
@@ -994,7 +1073,7 @@ func getDmwActiveContactStateData(apiUrl string, tenants [1]string) (models.DmwK
 	}
 
 	if response.StatusCode == 200 {
-		responseData, err = ioutil.ReadAll(response.Body)
+		responseData, err = io.ReadAll(response.Body)
 		if err != nil {
 			err = fmt.Errorf("[%s] returned error reading response body - error: %v\n", getDmwActiveContactStateDataOp, err)
 			return dmwKnownContact, err
@@ -1059,7 +1138,7 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 		return nil, log, err
 	}
 
-	logMsg = fmt.Sprintf("[%s] returned [%v] total hits\n", makeDfoContactSearchApiCallOp, dfoActiveContactList.Hits)
+	logMsg = fmt.Sprintf("[%s] returned [%v] total hits. (DFO limits calls to 25 records at a time.)\n", makeDfoContactSearchApiCallOp, dfoActiveContactList.Hits)
 	log = createLog(logMsg, log)
 
 	// Append first 25 Data records to Data list
@@ -1208,6 +1287,119 @@ func buildDeltaList(inputData InputDataObj, dmwKnownContact models.DmwKnownConta
 	return deltaList, log
 }
 
+// buildDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
+func buildDeltaListMap(inputData InputDataObj, dmwKnownContact models.DmwKnownContacts, dfoDataMap map[int64]models.DataView, log []byte) (models.DmwKnownContacts, []byte) {
+	type DmwContacts []models.DmwKnownContact
+	deltaArray := DmwContacts{}
+	var deltaList models.DmwKnownContacts
+	foundCount := 0
+	var logMsg string
+	var mtx sync.Mutex
+	notFoundCount := 0
+	alreadyClosedCount := 0
+	updateCount := 0
+
+	// Loop through DmwKnownContact.Contacts and check each contact data in DfoActiveContacts to see if we find a match
+	for _, contact := range dmwKnownContact.Contacts {
+		convertedDate := time.Unix(contact.CurrentContactDate.Seconds, int64(contact.CurrentContactDate.Nanos)).UTC().Format(time.RFC3339)
+		found := false
+		shouldClose := false
+
+		// Only compare contact with DFO data if contact is not closed (18)
+		if contact.CurrentContactState != 18 {
+			if len(dfoDataMap) > 0 {
+				// Check dfoDataMap for corresponding ContactId
+				d, ok := dfoDataMap[contact.ContactID]
+				if ok {
+					found = true
+					foundCount++
+					matchesDateFilter := true
+
+					dfoDigitalContactState := digiservice.MapFSMStateToDigitalContactState(fsm.State(d.Status))
+					// Check if current active states match - this print-out is strictly to be able to provide a list of contact ids that are in a miss-matched state
+					// We will not attempt to update these contacts as active contacts are always in motion and due to delays in processing time, we do not want to introduce more miss-matched states
+					if int32(dfoDigitalContactState) != contact.DigitalContactState {
+						updateCount++
+
+						logMsg = fmt.Sprintf("MissmatchedState:*ContactID*[%d]*Found*[%v]*DigimiddlewareDigitalContactState*[%d]*DfoDigitalContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, contact.DigitalContactState, int32(dfoDigitalContactState), convertedDate)
+						log = createLog(logMsg, log)
+					}
+
+					// If date filter was added, only check dmw known contacts between those dates
+					if inputData.DateFrom != "" {
+						if convertedDate <= inputData.DateFrom || convertedDate >= inputData.DateTo {
+							matchesDateFilter = false
+						}
+
+						if !matchesDateFilter {
+							break
+						}
+					}
+				} else {
+					shouldClose = true
+				}
+			} else {
+				shouldClose = true
+			}
+
+			if !found && shouldClose {
+				notFoundCount++
+
+				logMsg = fmt.Sprintf("ShouldClose:*ContactID*[%d]*Found*[%v]*DigimiddlewareDigitalContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, contact.DigitalContactState, convertedDate)
+				log = createLog(logMsg, log)
+			}
+		} else {
+			alreadyClosedCount++
+		}
+
+		// If no match is found and not already closed, add contact data to deltaList
+		if shouldClose {
+			delta := models.DmwKnownContact{
+				ContactID:                   contact.ContactID,
+				MasterContactID:             contact.MasterContactID,
+				TenantID:                    contact.TenantID,
+				QueueID:                     contact.QueueID,
+				StartDate:                   contact.StartDate,
+				FromAddr:                    contact.FromAddr,
+				CurrentContactState:         contact.CurrentContactState,
+				CurrentContactDate:          contact.CurrentContactDate,
+				Direction:                   contact.Direction,
+				ChannelID:                   contact.ChannelID,
+				StateIndex:                  contact.StateIndex,
+				CaseIDString:                contact.CaseIDString,
+				DigitalContactState:         contact.DigitalContactState,
+				PreviousQueueID:             contact.PreviousQueueID,
+				PreviousAgentUserID:         contact.PreviousAgentUserID,
+				PreviousContactState:        contact.PreviousContactState,
+				PreviousContactDate:         contact.PreviousContactDate,
+				PreviousDigitalContactState: contact.PreviousDigitalContactState,
+				EventID:                     contact.EventID,
+			}
+
+			mtx.Lock()
+			deltaArray = append(deltaArray, delta)
+			mtx.Unlock()
+
+			deltaList = models.DmwKnownContacts{
+				Contacts: deltaArray,
+			}
+		}
+	}
+
+	logMsg = fmt.Sprintf("total dmw known contacts: %d\n", len(dmwKnownContact.Contacts))
+	log = createLog(logMsg, log)
+	logMsg = fmt.Sprintf("total contacts that were already closed (will NOT attempt to update): %d\n", alreadyClosedCount)
+	log = createLog(logMsg, log)
+	logMsg = fmt.Sprintf("total contacts that were not found (will attempt to update): %d\n", notFoundCount)
+	log = createLog(logMsg, log)
+	logMsg = fmt.Sprintf("total contacts that were found (will NOT attempt to update): %d\n", foundCount)
+	log = createLog(logMsg, log)
+	logMsg = fmt.Sprintf("total contacts that were found but had miss-matched state (will NOT attempt to update as active contacts are always in motion and we do not want to introduce more miss-matched states): %d\n", updateCount)
+	log = createLog(logMsg, log)
+
+	return deltaList, log
+}
+
 // getDfoContactData calls makeDfoApiCall to get each contact data by contact id
 func getDfoContactData(dfoContactByIdApiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, contact models.DmwKnownContact, log []byte) (models.DataView, []byte) {
 	var dfoClosedContactData models.DataView
@@ -1305,7 +1497,7 @@ func makeDfoApiCall(apiUrl string, dfoAuthTokenObj models.DfoAuthTokenObj, metho
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 200 {
-		responseData, err = ioutil.ReadAll(resp.Body)
+		responseData, err = io.ReadAll(resp.Body)
 		if err != nil {
 			err = fmt.Errorf("[%s] error reading response bytes: %v\n", makeDfoApiCallOp, err)
 			return responseData, err
@@ -1562,4 +1754,30 @@ func writeLogFile(fileMode, filepath string, file []byte) {
 		// If error writing log files, print error but no need to add to log
 		fmt.Printf("There was an error writing logs to %s - error: %s", filepath, err)
 	}
+}
+
+// determineContactStateFromData determines contactState from digital contact state and details
+func determineContactStateFromData(agentUserID, queueID string, digitalContactState db.InDataDigitalContactState) db.InDataContactState {
+	var contactState db.InDataContactState
+	switch digitalContactState {
+	case db.InDataDigitalContactState_Closed, db.InDataDigitalContactState_Trashed:
+		contactState = db.InDataContactState_EndContact
+	case db.InDataDigitalContactState_Pending, db.InDataDigitalContactState_Escalated, db.InDataDigitalContactState_Resolved:
+		if agentUserID != "" {
+			contactState = db.InDataContactState_Active
+		} else {
+			contactState = db.InDataContactState_PostQueue
+		}
+	case db.InDataDigitalContactState_New, db.InDataDigitalContactState_Open:
+		if agentUserID != "" {
+			contactState = db.InDataContactState_Active
+		} else if queueID == "" {
+			contactState = db.InDataContactState_PreQueue
+		} else {
+			contactState = db.InDataContactState_InQueue
+		}
+	default:
+		contactState = db.InDataContactState_Undefined
+	}
+	return contactState
 }
