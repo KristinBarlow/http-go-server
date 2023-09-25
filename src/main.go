@@ -272,11 +272,10 @@ func main() {
 	wg.Wait()
 
 	// Get CxOne Tenant data and DFO Channel data asynchronously
-	wg.Add(2)
-
 	//getTenantData
 	var tenantData models.TenantWrapper
 	if cxOneToken.Error == nil {
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			var err error
@@ -306,6 +305,7 @@ func main() {
 	//getChannels
 	var channels []models.ChannelData
 	if dfoAuthTokenObj.Error == nil {
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			var err error
@@ -331,10 +331,9 @@ func main() {
 	wg.Wait()
 
 	// Get list of Digimiddleware known active contacts and DFO active contacts asynchronously
-	wg.Add(2)
-
 	//getDmwActiveContactStateData
-	if dfoAuthTokenObj.Error == nil {
+	if dfoAuthTokenObj.Error == nil { //Put if statement above both DMW and DFO calls as if we are unable to get a list of contacts from DFO, there is no sense calling DMW either.
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			var err error
@@ -356,6 +355,7 @@ func main() {
 		}()
 
 		//makeDfoContactSearchApiCall
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			var err error
