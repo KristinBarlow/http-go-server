@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/MyGoProjects/http-go-server/src/models"
 	"github.com/google/uuid"
-	db "github.com/inContact/orch-common/dbmappings"
 	"github.com/inContact/orch-common/fsm"
 	pbm "github.com/inContact/orch-common/proto/digi/digimiddleware"
 	"github.com/inContact/orch-digital-middleware/pkg/digiservice"
@@ -16,7 +15,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"regexp"
@@ -73,7 +71,7 @@ type CxOneApiObj struct {
 	UrlPrefix             string
 	Path                  string
 	PathNoDash            string
-	GetTenantbyIdEndpoint string
+	GetTenantByIdEndpoint string
 	GetTokenEndpoint      string
 }
 
@@ -143,7 +141,7 @@ func main() {
 		UrlPrefix:             "https://",
 		Path:                  ".nice-incontact.com/",
 		PathNoDash:            ".niceincontact.com/",
-		GetTenantbyIdEndpoint: "tenants/id/",
+		GetTenantByIdEndpoint: "tenants/id/",
 		GetTokenEndpoint:      "authentication/v1/token/access-key",
 	}
 
@@ -329,8 +327,30 @@ func main() {
 		return
 	}
 	wg.Wait()
-
 	// Get list of Digimiddleware known active contacts and DFO active contacts asynchronously
+	//makeDfoContactSearchApiCall
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var err error
+		t := time.Now()
+
+		logMsg = fmt.Sprintf("begin api call: [%s]\n", makeDfoContactSearchApiCallOp)
+		logFile = createLog(logMsg, logFile)
+
+		dfoDataList, logFile, err = makeDfoContactSearchApiCall(dfoContactSearchApiUrl, inputData, dfoAuthTokenObj, logFile)
+		if err != nil {
+			dfoData.Err = err
+
+			logMsg = fmt.Sprintf("error calling [%s]]: [%v]\n", makeDfoContactSearchApiCallOp, err)
+			logFile = createLog(logMsg, logFile)
+
+			return
+		}
+		logMsg = fmt.Sprintf("[%s] - done, duration=%s, dfoActiveContacts=%d\n", makeDfoContactSearchApiCallOp, time.Since(t), len(dfoDataList))
+		logFile = createLog(logMsg, logFile)
+	}()
+
 	//getDmwActiveContactStateData
 	if dfoAuthTokenObj.Error == nil { //Put if statement above both DMW and DFO calls as if we are unable to get a list of contacts from DFO, there is no sense calling DMW either.
 		wg.Add(1)
@@ -351,29 +371,6 @@ func main() {
 				return
 			}
 			logMsg = fmt.Sprintf("[%s] successfully returned [%d] total contacts, duration=%s\n", getDmwActiveContactStateDataOp, len(dmwKnownContact.Contacts), time.Since(t))
-			logFile = createLog(logMsg, logFile)
-		}()
-
-		//makeDfoContactSearchApiCall
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var err error
-			t := time.Now()
-
-			logMsg = fmt.Sprintf("begin api call: [%s]\n", makeDfoContactSearchApiCallOp)
-			logFile = createLog(logMsg, logFile)
-
-			dfoDataList, logFile, err = makeDfoContactSearchApiCall(dfoContactSearchApiUrl, inputData, dfoAuthTokenObj, logFile)
-			if err != nil {
-				dfoData.Err = err
-
-				logMsg = fmt.Sprintf("error calling [%s]]: [%v]\n", makeDfoContactSearchApiCallOp, err)
-				logFile = createLog(logMsg, logFile)
-
-				return
-			}
-			logMsg = fmt.Sprintf("[%s] - done, duration=%s, dfoActiveContacts=%d\n", makeDfoContactSearchApiCallOp, time.Since(t), len(dfoDataList))
 			logFile = createLog(logMsg, logFile)
 		}()
 	} else {
@@ -425,7 +422,7 @@ func main() {
 
 	// Batch and Process records to digimiddleware using gRPC
 	if len(deltaContacts.Contacts) > 0 {
-		logFile = process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, inputData, tenantData.Tenant, channels, logFile)
+		logFile = process(deltaContacts.Contacts, dfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl, tenantData.Tenant, channels, logFile)
 	} else {
 		logMsg = fmt.Sprintf("comparison of lists returned 0 contacts to update - will not attempt to process updates")
 		logFile = createLog(logMsg, logFile)
@@ -443,7 +440,7 @@ func main() {
 }
 
 // process batches the data into specified batchSize to process
-func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl string, inputData InputDataObj, tenant models.Tenant, channels []models.ChannelData, log []byte) []byte {
+func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoAuthTokenObj, dfoContactByIdApiUrl, dmwGrpcApiUrl string, tenant models.Tenant, channels []models.ChannelData, log []byte) []byte {
 	batchCount := 1
 	var errList []models.DataView
 	var logMsg string
@@ -543,6 +540,8 @@ func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoA
 			logMsg = fmt.Sprintf("[%s] there were no contacts added to sanitizedUpdateRecords list - will not attempt to process updates\n", processBatchOp)
 			log = createLog(logMsg, log)
 		}
+		// Sleep between processing batches to not overload Digipro pushes to the VC
+		time.Sleep(20 * time.Second)
 	}
 
 	// Range over updatedRecords to print all update record objects that were sent to dmw for update
@@ -717,18 +716,18 @@ func buildUri(apiType string, i InputDataObj, apiObjects ApiObjects, log []byte)
 		case "prod":
 			switch i.Region {
 			case "na1", "au1":
-				uri = apiObjects.CxOneApi.UrlPrefix + i.Region + apiObjects.CxOneApi.Path + apiObjects.CxOneApi.GetTenantbyIdEndpoint
+				uri = apiObjects.CxOneApi.UrlPrefix + i.Region + apiObjects.CxOneApi.Path + apiObjects.CxOneApi.GetTenantByIdEndpoint
 				logMsg = fmt.Sprintln(uri)
 				log = createLog(logMsg, log)
 			case "eu1", "jp1", "uk1", "ca1":
-				uri = apiObjects.CxOneApi.UrlPrefix + i.Region + apiObjects.CxOneApi.PathNoDash + apiObjects.CxOneApi.GetTenantbyIdEndpoint
+				uri = apiObjects.CxOneApi.UrlPrefix + i.Region + apiObjects.CxOneApi.PathNoDash + apiObjects.CxOneApi.GetTenantByIdEndpoint
 				logMsg = fmt.Sprintln(uri)
 				log = createLog(logMsg, log)
 			default:
 				break
 			}
 		case "dev", "test", "staging":
-			uri = apiObjects.CxOneApi.UrlPrefix + i.Region + "." + i.Env + apiObjects.CxOneApi.Path + apiObjects.CxOneApi.GetTenantbyIdEndpoint
+			uri = apiObjects.CxOneApi.UrlPrefix + i.Region + "." + i.Env + apiObjects.CxOneApi.Path + apiObjects.CxOneApi.GetTenantByIdEndpoint
 			logMsg = fmt.Sprintln(uri)
 			log = createLog(logMsg, log)
 		default:
@@ -1131,6 +1130,23 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 		}
 	}
 
+	if dfoActiveContactList.Hits > batchSize {
+		numberOfApiCalls := dfoActiveContactList.Hits / 25
+		fmt.Printf("TOTAL ACTIVE DFO CONTACTS [%v] WHICH WILL MAKE [%d] API CALLS TO DFO. Type Y to continue or N to cancel: ", dfoActiveContactList.Hits, numberOfApiCalls)
+		reader := bufio.NewReader(os.Stdin)
+
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		response = strings.TrimSuffix(response, "\r\n")
+
+		if response == "no" || response == "No" || response == "N" {
+			os.Exit(1) // Terminate the program
+		}
+	}
+
 	if dfoActiveContactList.Hits == 0 {
 		logMsg = fmt.Sprintf("[%s] returned 0 records\n", makeDfoContactSearchApiCallOp)
 		log = createLog(logMsg, log)
@@ -1182,112 +1198,7 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 	return dfoData, log, nil
 }
 
-// buildDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
-func buildDeltaList(inputData InputDataObj, dmwKnownContact models.DmwKnownContacts, dfoData []models.DataView, log []byte) (models.DmwKnownContacts, []byte) {
-	type DmwContacts []models.DmwKnownContact
-	deltaArray := DmwContacts{}
-	var deltaList models.DmwKnownContacts
-	foundCount := 0
-	var logMsg string
-	var mtx sync.Mutex
-	notFoundCount := 0
-	alreadyClosedCount := 0
-
-	// Loop through DmwKnownContact.Contacts and check each contact data in DfoActiveContacts to see if we find a match
-	for _, contact := range dmwKnownContact.Contacts {
-		convertedDate := time.Unix(contact.CurrentContactDate.Seconds, int64(contact.CurrentContactDate.Nanos)).UTC().Format(time.RFC3339)
-		found := false
-		shouldClose := false
-
-		// Only compare contact with DFO data if contact is not closed (18)
-		if contact.CurrentContactState != 18 {
-			if len(dfoData) > 0 {
-				// Compare the data from DFO with the DMW data
-				for _, d := range dfoData {
-					dataId, _ := strconv.ParseInt(d.Id, 10, 64)
-					shouldClose = false
-					matchesDateFilter := true
-
-					// If date filter was added, only check dmw known contacts between those dates
-					if inputData.DateFrom != "" {
-						if convertedDate <= inputData.DateFrom || convertedDate >= inputData.DateTo {
-							matchesDateFilter = false
-						}
-
-						if !matchesDateFilter {
-							break
-						}
-					}
-
-					if contact.ContactID == dataId {
-						found = true
-						foundCount++
-						break
-					} else {
-						shouldClose = true
-					}
-				}
-			} else {
-				shouldClose = true
-			}
-
-			if !found && shouldClose {
-				notFoundCount++
-
-				logMsg = fmt.Sprintf("ContactID*[%d]*Found*[%v]*ShouldClose*[%v]*DmwContactState*[%d]*CurrentContactDate*[%v]\n", contact.ContactID, found, shouldClose, contact.CurrentContactState, convertedDate)
-				log = createLog(logMsg, log)
-			}
-		} else {
-			alreadyClosedCount++
-		}
-
-		// If no match is found and not already closed, add contact data to deltaList
-		if shouldClose {
-			delta := models.DmwKnownContact{
-				ContactID:                   contact.ContactID,
-				MasterContactID:             contact.MasterContactID,
-				TenantID:                    contact.TenantID,
-				QueueID:                     contact.QueueID,
-				StartDate:                   contact.StartDate,
-				FromAddr:                    contact.FromAddr,
-				CurrentContactState:         contact.CurrentContactState,
-				CurrentContactDate:          contact.CurrentContactDate,
-				Direction:                   contact.Direction,
-				ChannelID:                   contact.ChannelID,
-				StateIndex:                  contact.StateIndex,
-				CaseIDString:                contact.CaseIDString,
-				DigitalContactState:         contact.DigitalContactState,
-				PreviousQueueID:             contact.PreviousQueueID,
-				PreviousAgentUserID:         contact.PreviousAgentUserID,
-				PreviousContactState:        contact.PreviousContactState,
-				PreviousContactDate:         contact.PreviousContactDate,
-				PreviousDigitalContactState: contact.PreviousDigitalContactState,
-				EventID:                     contact.EventID,
-			}
-
-			mtx.Lock()
-			deltaArray = append(deltaArray, delta)
-			mtx.Unlock()
-
-			deltaList = models.DmwKnownContacts{
-				Contacts: deltaArray,
-			}
-		}
-	}
-
-	logMsg = fmt.Sprintf("total dmw known contacts: %d\n", len(dmwKnownContact.Contacts))
-	log = createLog(logMsg, log)
-	logMsg = fmt.Sprintf("total contacts that were already closed (will not attempt to update): %d\n", alreadyClosedCount)
-	log = createLog(logMsg, log)
-	logMsg = fmt.Sprintf("total contacts that were not found (will attempt to update): %d\n", notFoundCount)
-	log = createLog(logMsg, log)
-	logMsg = fmt.Sprintf("total contacts that were found (will not attempt to update): %d\n", foundCount)
-	log = createLog(logMsg, log)
-
-	return deltaList, log
-}
-
-// buildDeltaList loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
+// buildDeltaListMap loops through the known contacts from DMW and compares them to the active contacts in DFO and creates a list of contacts that need to be updated
 func buildDeltaListMap(inputData InputDataObj, dmwKnownContact models.DmwKnownContacts, dfoDataMap map[int64]models.DataView, log []byte) (models.DmwKnownContacts, []byte) {
 	type DmwContacts []models.DmwKnownContact
 	deltaArray := DmwContacts{}
@@ -1397,6 +1308,23 @@ func buildDeltaListMap(inputData InputDataObj, dmwKnownContact models.DmwKnownCo
 	logMsg = fmt.Sprintf("total contacts that were found but had miss-matched state (will NOT attempt to update as active contacts are always in motion and we do not want to introduce more miss-matched states): %d\n", updateCount)
 	log = createLog(logMsg, log)
 
+	if notFoundCount > batchSize {
+		timeToComplete := ((notFoundCount / batchSize) * 20) / 60
+		fmt.Printf("TOTAL CONTACTS TO CLOSE [%d] WHICH WILL MAKE [%d] API CALLS TO DFO AND TAKE [%d] MINUTES TO COMPLETELY PROCESS. Type Y to continue or N to cancel: ", notFoundCount, notFoundCount, timeToComplete)
+		reader := bufio.NewReader(os.Stdin)
+
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		response = strings.TrimSuffix(response, "\r\n")
+
+		if response == "no" || response == "No" || response == "N" {
+			os.Exit(1) // Terminate the program
+		}
+	}
+
 	return deltaList, log
 }
 
@@ -1452,7 +1380,7 @@ func makeCxOneApiCall(apiUrl string, token models.CxoneAuthTokenObj, tenantId st
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 200 {
-		responseData, err = ioutil.ReadAll(resp.Body)
+		responseData, err = io.ReadAll(resp.Body)
 		if err != nil {
 			err = fmt.Errorf("[%s] error reading response bytes: %v\n", makeCxOneApiCallOp, err)
 			return responseData, err
@@ -1754,30 +1682,4 @@ func writeLogFile(fileMode, filepath string, file []byte) {
 		// If error writing log files, print error but no need to add to log
 		fmt.Printf("There was an error writing logs to %s - error: %s", filepath, err)
 	}
-}
-
-// determineContactStateFromData determines contactState from digital contact state and details
-func determineContactStateFromData(agentUserID, queueID string, digitalContactState db.InDataDigitalContactState) db.InDataContactState {
-	var contactState db.InDataContactState
-	switch digitalContactState {
-	case db.InDataDigitalContactState_Closed, db.InDataDigitalContactState_Trashed:
-		contactState = db.InDataContactState_EndContact
-	case db.InDataDigitalContactState_Pending, db.InDataDigitalContactState_Escalated, db.InDataDigitalContactState_Resolved:
-		if agentUserID != "" {
-			contactState = db.InDataContactState_Active
-		} else {
-			contactState = db.InDataContactState_PostQueue
-		}
-	case db.InDataDigitalContactState_New, db.InDataDigitalContactState_Open:
-		if agentUserID != "" {
-			contactState = db.InDataContactState_Active
-		} else if queueID == "" {
-			contactState = db.InDataContactState_PreQueue
-		} else {
-			contactState = db.InDataContactState_InQueue
-		}
-	default:
-		contactState = db.InDataContactState_Undefined
-	}
-	return contactState
 }
