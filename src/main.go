@@ -1142,7 +1142,7 @@ func makeDfoContactSearchApiCall(dfoContactSearchApiUrl string, i InputDataObj, 
 
 		response = strings.TrimSuffix(response, "\r\n")
 
-		if response == "no" || response == "No" || response == "N" {
+		if response != "Y" || response != "y" || response != "Yes" || response != "yes" {
 			os.Exit(1) // Terminate the program
 		}
 	}
@@ -1320,7 +1320,7 @@ func buildDeltaListMap(inputData InputDataObj, dmwKnownContact models.DmwKnownCo
 
 		response = strings.TrimSuffix(response, "\r\n")
 
-		if response == "no" || response == "No" || response == "N" {
+		if response != "Y" || response != "y" || response != "Yes" || response != "yes" {
 			os.Exit(1) // Terminate the program
 		}
 	}
