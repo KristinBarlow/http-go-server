@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"github.com/MyGoProjects/http-go-server/src/models"
@@ -13,8 +15,10 @@ import (
 	"github.com/inContact/orch-digital-middleware/pkg/digiservice"
 	"github.com/inContact/orch-digital-middleware/pkg/digitransport"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"regexp"
@@ -126,6 +130,15 @@ type TenantIdsWrapper struct {
 	TenantIDs [1]string `json:"tenantIds"`
 }
 
+// Define a map of environment names to CA certificate paths
+var certPaths = map[string]string{
+	"prod":    "src/certs/lax-incer01.inucn.com.cer",
+	"dev":     "src/certs/in-ena-incer01-ca.cer",
+	"test":    "src/certs/in-ena-incer01-ca.cer",
+	"staging": "src/certs/in-ena-incer01-ca.cer",
+	"perf":    "src/certs/in-ena-incer01-ca.cer",
+}
+
 func main() {
 	var dfoDataList []models.DataView
 	var dfoData models.DataView
@@ -176,7 +189,7 @@ func main() {
 	}
 
 	var inputRequest = InputRequestObj{
-		Region:               "region - i.e. \"na1\" (Oregon), \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal)",
+		Region:               "region - i.e. \"na1\" (Oregon), \"na2\" (FedRAMP)\", \"au1\" (Australia), \"eu1\" (Frankfurt), \"jp1\" (Japan), \"uk1\" (London), \"ca1\" (Montreal), \"ae1\" (UAE)",
 		Environment:          "environment - i.e. \"dev\", \"test\", \"staging\", \"prod\"",
 		TenantId:             "tenantID (in GUID format)",
 		CxOneAccessKeyId:     "cxone accessKeyId (decode k9s - :secrets - digimiddleware-mcr-access-details)",
@@ -203,11 +216,19 @@ func main() {
 	}
 
 	// Update below as new regions switch over to the new Eks
-	if inputData.Env == "dev" { //new Eks
-		dmwApi.UrlPrefix = "https://digi-"
-		dmwApi.Port = "443"
-		dmwGrpc.UriPrefix = "digi-"
-		dmwGrpc.Port = "443"
+	if inputData.Env == "dev" ||
+		(inputData.Env == "prod" && inputData.Region == "na1") ||
+		(inputData.Env == "prod" && inputData.Region == "na2") ||
+		//(inputData.Env == "prod" && inputData.Region == "au1") ||
+		//(inputData.Env == "prod" && inputData.Region == "jp1") ||
+		(inputData.Env == "prod" && inputData.Region == "eu1") ||
+		(inputData.Env == "prod" && inputData.Region == "uk1") ||
+		(inputData.Env == "prod" && inputData.Region == "ca1") ||
+		(inputData.Env == "prod" && inputData.Region == "ae1") {
+		apiObjects.DmwApi.UrlPrefix = "https://digi-"
+		apiObjects.DmwApi.Port = "443"
+		apiObjects.DmwGrpc.UriPrefix = "digi-"
+		apiObjects.DmwGrpc.Port = "443"
 	}
 	if inputData.Env == "localhost" {
 		dmwApi.UrlPrefix = "http://localhost:"
@@ -516,7 +537,7 @@ func process(deltaContacts []models.DmwKnownContact, dfoAuthTokenObj models.DfoA
 			log = createLog(logMsg, log)
 
 			t := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), 500000*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 300000*time.Millisecond)
 
 			log, err = sendUpdateRecordsToMiddleware(ctx, &pbm.CaseUpdateEvents{
 				Updates:    sanitizedUpdateRecords,
@@ -1642,16 +1663,59 @@ func sendUpdateRecordsToMiddleware(ctx context.Context, events *pbm.CaseUpdateEv
 
 // createCrpcClient creates the client needed to make gRPC calls to digimiddleware
 func createGrpcClient(dmwGrpcApiUrl string) (digiservice.GrpcService, error) {
-	digimiddlewareGrpcAddr := dmwGrpcApiUrl
+	// Extract environment name from dmwGrpcApiUrl
+	env := extractEnvFromUrl(dmwGrpcApiUrl)
+	serverName := extractServerNameFromUrl(dmwGrpcApiUrl)
 
-	conn, err := grpc.Dial(digimiddlewareGrpcAddr, grpc.WithInsecure())
+	// Check if a certificate path is defined for the environment
+	certPath, ok := certPaths[env]
+	if !ok {
+		return nil, fmt.Errorf("certificate path not found for environment: %s", env)
+	}
+
+	// Load the CA certificate for the environment
+	caCert, err := ioutil.ReadFile(certPath)
 	if err != nil {
-		err = fmt.Errorf("[%s] initialization of digimiddleware grpc client failed with err: [%v]\n", createGrpcClientOp, err)
-		return nil, err
+		return nil, fmt.Errorf("failed to read CA certificate: %v", err)
+	}
+
+	// Create a certificate pool and add the CA certificate
+	certPool := x509.NewCertPool()
+	certPool.AppendCertsFromPEM(caCert)
+
+	// Create TLS credentials using the certificate pool
+	creds := credentials.NewTLS(&tls.Config{
+		ServerName:         serverName,
+		RootCAs:            certPool,
+		InsecureSkipVerify: true, // without this line, I am unable to run the tool in prod.  Until certificates include SANs, we need to keep this line here.
+	})
+
+	// Dial the gRPC server using TLS credentials
+	conn, err := grpc.Dial(dmwGrpcApiUrl, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		return nil, fmt.Errorf("initialization of digimiddleware gRPC client failed with error: %v", err)
 	}
 
 	middlewareEventService := digitransport.NewGRPCClient(conn, nil, nil)
 	return middlewareEventService, nil
+}
+
+// extractEnvFromUrl extracts the environment name from URL
+func extractEnvFromUrl(url string) string {
+	// Split the URL by "."
+	parts := strings.Split(url, ".")
+
+	// The environment name is usually the last part of the URL
+	return parts[len(parts)-2]
+}
+
+// extractServerNameFromUrl extracts the environment name from URL
+func extractServerNameFromUrl(url string) string {
+	// Split the URL by ":"
+	parts := strings.Split(url, ":")
+
+	// The environment name is usually the last part of the URL
+	return parts[len(parts)-2]
 }
 
 // createLog prints message to console and appends log message to log file
