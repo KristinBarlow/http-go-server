@@ -219,8 +219,8 @@ func main() {
 	if inputData.Env == "dev" ||
 		(inputData.Env == "prod" && inputData.Region == "na1") ||
 		(inputData.Env == "prod" && inputData.Region == "na2") ||
-		//(inputData.Env == "prod" && inputData.Region == "au1") ||
-		//(inputData.Env == "prod" && inputData.Region == "jp1") ||
+		(inputData.Env == "prod" && inputData.Region == "au1") ||
+		(inputData.Env == "prod" && inputData.Region == "jp1") ||
 		(inputData.Env == "prod" && inputData.Region == "eu1") ||
 		(inputData.Env == "prod" && inputData.Region == "uk1") ||
 		(inputData.Env == "prod" && inputData.Region == "ca1") ||
